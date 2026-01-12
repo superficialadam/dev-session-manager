@@ -1,7 +1,3 @@
-# Runtime data generated on the server
-runtime/*
-!runtime/.gitkeep
-
 # Dashboard build artifacts
 packages/dashboard/.next
 packages/dashboard/node_modules

@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PACKAGES_DIR="$REPO_ROOT/packages"
 SCRIPTS_DIR="$PACKAGES_DIR/scripts"
 DASHBOARD_DIR="$PACKAGES_DIR/dashboard"
-DEFAULT_DEV_DIR="$REPO_ROOT/runtime"
+DEFAULT_DEV_DIR="$HOME/dev"
 
 # Colors
 RED='\033[0;31m'
