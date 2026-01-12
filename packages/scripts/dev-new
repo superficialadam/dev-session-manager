@@ -4,7 +4,11 @@ set -euo pipefail
 # dev-new: Create a new development session with worktree, tmux, and ttyd
 # Usage: dev-new <repo> <branch> [--agent opencode|claude]
 
-DEV_DIR="${DEV_DIR:-$HOME/dev}"
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DEFAULT_DEV_DIR="$REPO_ROOT/runtime"
+DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
 CONFIG_FILE="$DEV_DIR/config.json"
 REPOS_FILE="$DEV_DIR/repos.json"
 SESSIONS_DIR="$DEV_DIR/sessions"

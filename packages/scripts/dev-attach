@@ -4,7 +4,11 @@ set -euo pipefail
 # dev-attach: Attach to a development session
 # Usage: dev-attach <session> [--window <name>]
 
-DEV_DIR="${DEV_DIR:-$HOME/dev}"
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DEFAULT_DEV_DIR="$REPO_ROOT/runtime"
+DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
 SESSIONS_DIR="$DEV_DIR/sessions"
 
 # Colors

@@ -1,0 +1,20 @@
+# Runtime data generated on the server
+runtime/*
+!runtime/.gitkeep
+
+# Dashboard build artifacts
+packages/dashboard/.next
+packages/dashboard/node_modules
+packages/dashboard/.turbo
+packages/dashboard/dist
+packages/dashboard/pnpm-lock.yaml
+packages/dashboard/package-lock.json
+packages/dashboard/yarn.lock
+packages/dashboard/.pnpm-debug.log*
+
+# Logs
+*.log
+*.pid
+
+# macOS cruft
+.DS_Store

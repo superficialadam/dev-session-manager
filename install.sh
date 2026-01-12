@@ -2,27 +2,15 @@
 set -euo pipefail
 
 # Dev Session Manager - Install Script
-# Usage: ./install.sh [dev-directory]
-# Example: ./install.sh ~/CODE
+# Usage: ./install.sh [data-directory]
+# Example: ./install.sh ~/dev-data
 
-# Colors (defined early for prompt)
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# Get DEV_DIR from argument, env, or ask
-if [[ -n "${1:-}" ]]; then
-    DEV_DIR="$1"
-elif [[ -n "${DEV_DIR:-}" ]]; then
-    DEV_DIR="$DEV_DIR"
-else
-    echo ""
-    echo -e "${BLUE}Where should dev sessions be stored?${NC}"
-    read -r -p "Directory [$HOME/dev]: " input_dir
-    DEV_DIR="${input_dir:-$HOME/dev}"
-fi
-
-# Expand ~ if present
-DEV_DIR="${DEV_DIR/#\~/$HOME}"
+SCRIPT_PATH="$(readlink -f "$0")"
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+PACKAGES_DIR="$REPO_ROOT/packages"
+SCRIPTS_DIR="$PACKAGES_DIR/scripts"
+DASHBOARD_DIR="$PACKAGES_DIR/dashboard"
+DEFAULT_DEV_DIR="$REPO_ROOT/runtime"
 
 # Colors
 RED='\033[0;31m'
@@ -35,6 +23,21 @@ log_info() { echo -e "${BLUE}→${NC} $1"; }
 log_success() { echo -e "${GREEN}✓${NC} $1"; }
 log_warn() { echo -e "${YELLOW}!${NC} $1"; }
 log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+
+# Get DEV_DIR from argument, env, or ask
+if [[ -n "${1:-}" ]]; then
+    DEV_DIR="$1"
+elif [[ -n "${DEV_DIR:-}" ]]; then
+    DEV_DIR="$DEV_DIR"
+else
+    echo ""
+    echo -e "${BLUE}Where should runtime data be stored?${NC}"
+    read -r -p "Directory [$DEFAULT_DEV_DIR]: " input_dir
+    DEV_DIR="${input_dir:-$DEFAULT_DEV_DIR}"
+fi
+
+# Expand ~ if present
+DEV_DIR="${DEV_DIR/#\~/$HOME}"
 
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -68,11 +71,11 @@ if ! command -v ttyd &> /dev/null; then
     log_warn "ttyd not found - install for web terminal: https://github.com/tsl0922/ttyd/releases"
 fi
 
-# Create directory structure
-log_info "Creating directory structure..."
-mkdir -p "$DEV_DIR"/{repos,worktrees,sessions,scripts}
+# Create runtime directory structure
+log_info "Creating runtime directories..."
+mkdir -p "$DEV_DIR"/{repos,worktrees,sessions}
 mkdir -p "$HOME/.local/bin"
-log_success "Directories created: $DEV_DIR"
+log_success "Runtime directories ready at: $DEV_DIR"
 
 # Create default config
 if [[ ! -f "$DEV_DIR/config.json" ]]; then
@@ -101,28 +104,20 @@ if [[ ! -f "$DEV_DIR/repos.json" ]]; then
     echo '{}' > "$DEV_DIR/repos.json"
 fi
 
-# Copy scripts
-log_info "Installing scripts..."
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-
-if [[ -d "$SCRIPT_DIR/scripts" ]]; then
-    cp "$SCRIPT_DIR/scripts"/dev-* "$DEV_DIR/scripts/"
-else
-    log_warn "Scripts directory not found, skipping script copy"
-    log_info "You'll need to copy scripts manually"
+# Link scripts from repo (not copy)
+log_info "Linking CLI scripts from repository..."
+if [[ ! -d "$SCRIPTS_DIR" ]]; then
+    log_error "Scripts directory not found at $SCRIPTS_DIR"
+    exit 1
 fi
 
-# Make scripts executable
-chmod +x "$DEV_DIR/scripts"/dev-* 2>/dev/null || true
-
-# Create symlinks
-log_info "Creating symlinks..."
-for script in "$DEV_DIR/scripts"/dev-*; do
+chmod +x "$SCRIPTS_DIR"/dev-* 2>/dev/null || true
+for script in "$SCRIPTS_DIR"/dev-*; do
     [[ ! -f "$script" ]] && continue
     name=$(basename "$script")
     ln -sf "$script" "$HOME/.local/bin/$name"
 done
-log_success "Scripts linked to ~/.local/bin/"
+log_success "Scripts linked from $SCRIPTS_DIR to ~/.local/bin/"
 
 # Check PATH
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
@@ -131,13 +126,10 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo '  export PATH="$HOME/.local/bin:$PATH"'
 fi
 
-# Copy dashboard
-if [[ -d "$SCRIPT_DIR/dashboard" ]]; then
-    log_info "Copying dashboard..."
-    cp -r "$SCRIPT_DIR/dashboard" "$DEV_DIR/"
-    
+# Install dashboard dependencies (in place, no copy)
+if [[ -d "$DASHBOARD_DIR" ]]; then
     log_info "Installing dashboard dependencies..."
-    cd "$DEV_DIR/dashboard"
+    cd "$DASHBOARD_DIR"
     
     if command -v pnpm &> /dev/null; then
         pnpm install
@@ -145,9 +137,10 @@ if [[ -d "$SCRIPT_DIR/dashboard" ]]; then
         npm install
     fi
     
-    log_success "Dashboard installed to $DEV_DIR/dashboard"
+    log_success "Dashboard dependencies installed"
+    cd "$REPO_ROOT"
 else
-    log_warn "Dashboard directory not found"
+    log_warn "Dashboard directory not found at $DASHBOARD_DIR"
 fi
 
 # Create systemd user service for watcher
@@ -161,10 +154,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$DEV_DIR/scripts/dev-watch
+ExecStart=$SCRIPTS_DIR/dev-watch
 Restart=always
 RestartSec=5
 Environment=DEV_DIR=$DEV_DIR
+WorkingDirectory=$REPO_ROOT
 
 [Install]
 WantedBy=default.target
@@ -173,8 +167,8 @@ EOF
 log_success "Systemd service created"
 log_info "Enable with: systemctl --user enable --now dev-watch"
 
-# Add DEV_DIR export to shell profile if not default
-if [[ "$DEV_DIR" != "$HOME/dev" ]]; then
+# Add DEV_DIR export to shell profile if customized
+if [[ "$DEV_DIR" != "$DEFAULT_DEV_DIR" ]]; then
     log_info "Adding DEV_DIR to shell profile..."
     
     SHELL_RC=""
@@ -202,7 +196,8 @@ echo "╔═══════════════════════�
 echo "║       Installation Complete!         ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
-echo "Dev directory: $DEV_DIR"
+echo "Repository root: $REPO_ROOT"
+echo "Runtime data:    $DEV_DIR"
 echo ""
 echo "Next steps:"
 echo ""
@@ -216,7 +211,7 @@ echo "3. Create a session:"
 echo "   dev-new <repo-name> <branch>"
 echo ""
 echo "4. Start the dashboard:"
-echo "   cd $DEV_DIR/dashboard && pnpm dev"
+echo "   cd $DASHBOARD_DIR && pnpm dev"
 echo ""
 echo "5. Start the watcher (for notifications):"
 echo "   systemctl --user enable --now dev-watch"
