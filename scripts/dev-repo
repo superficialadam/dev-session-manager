@@ -1,0 +1,468 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-repo: Manage registered repositories using gh CLI
+# Usage: dev-repo <command> [args]
+
+DEV_DIR="${DEV_DIR:-$HOME/dev}"
+REPOS_FILE="$DEV_DIR/repos.json"
+REPOS_DIR="$DEV_DIR/repos"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}→${NC} $1"; }
+log_success() { echo -e "${GREEN}✓${NC} $1"; }
+log_warn() { echo -e "${YELLOW}!${NC} $1"; }
+log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+
+usage() {
+    cat << EOF
+Usage: dev-repo <command> [args]
+
+Commands:
+  list                      List registered repos
+  add <repo>                Clone and register repo (uses gh)
+  remove <n>             Unregister repo (keeps files)
+  branches <n>           List branches for repo
+  fetch <n>              Fetch all remotes
+  set-servers <n>        Configure dev servers (interactive)
+  show <n>               Show repo details
+  
+  github [--org <org>]      List GitHub repos (sorted by activity)
+  pick [--org <org>]        Interactive picker to add a repo
+
+Options:
+  --json    Output as JSON
+  --help    Show this help
+
+Examples:
+  dev-repo github                    # List your repos
+  dev-repo github --org 75am         # List org repos
+  dev-repo pick                      # Interactive picker
+  dev-repo pick --org 75am           # Pick from org
+  dev-repo add owner/repo            # Add by full name
+EOF
+    exit 0
+}
+
+ensure_repos_file() {
+    mkdir -p "$DEV_DIR" "$REPOS_DIR"
+    if [[ ! -f "$REPOS_FILE" ]]; then
+        echo '{}' > "$REPOS_FILE"
+    fi
+}
+
+ensure_gh() {
+    if ! command -v gh &> /dev/null; then
+        log_error "gh CLI not found. Install with: sudo apt install gh"
+        exit 1
+    fi
+    
+    if ! gh auth status &> /dev/null; then
+        log_error "gh not authenticated. Run: gh auth login"
+        exit 1
+    fi
+}
+
+# List GitHub repos sorted by last push
+cmd_github() {
+    ensure_gh
+    
+    local org=""
+    local json_output=false
+    local limit=30
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --org) org="$2"; shift 2 ;;
+            --json) json_output=true; shift ;;
+            --limit) limit="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    
+    local gh_args=(repo list --limit "$limit" --json name,nameWithOwner,description,pushedAt,isPrivate,isFork)
+    [[ -n "$org" ]] && gh_args+=(--owner "$org")
+    
+    local repos
+    repos=$(gh "${gh_args[@]}" | jq 'sort_by(.pushedAt) | reverse')
+    
+    if $json_output; then
+        echo "$repos"
+    else
+        echo ""
+        if [[ -n "$org" ]]; then
+            echo -e "${CYAN}$org${NC} repositories"
+        else
+            echo -e "${CYAN}Your${NC} repositories"
+        fi
+        echo -e "${DIM}Sorted by last activity${NC}"
+        echo ""
+        
+        echo "$repos" | jq -r '.[] | "\(.nameWithOwner)\t\(.pushedAt)\t\(.description // "")\t\(.isPrivate)\t\(.isFork)"' | \
+        while IFS=$'\t' read -r name pushed desc private fork; do
+            # Format relative time
+            local push_ts=$(date -d "$pushed" +%s 2>/dev/null || echo "0")
+            local now_ts=$(date +%s)
+            local diff=$((now_ts - push_ts))
+            local ago
+            
+            if [[ $diff -lt 3600 ]]; then
+                ago="$((diff / 60))m ago"
+            elif [[ $diff -lt 86400 ]]; then
+                ago="$((diff / 3600))h ago"
+            elif [[ $diff -lt 604800 ]]; then
+                ago="$((diff / 86400))d ago"
+            else
+                ago=$(date -d "$pushed" '+%b %d' 2>/dev/null || echo "$pushed")
+            fi
+            
+            # Indicators
+            local indicators=""
+            [[ "$private" == "true" ]] && indicators+=" 🔒"
+            [[ "$fork" == "true" ]] && indicators+=" ⑂"
+            
+            printf "${CYAN}%-40s${NC} ${DIM}%8s${NC}%s\n" "$name" "$ago" "$indicators"
+            [[ -n "$desc" ]] && printf "  ${DIM}%s${NC}\n" "${desc:0:70}"
+        done
+    fi
+}
+
+# Interactive picker
+cmd_pick() {
+    ensure_gh
+    ensure_repos_file
+    
+    local org=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --org) org="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    
+    log_info "Fetching repos from GitHub..."
+    
+    local gh_args=(repo list --limit 30 --json name,nameWithOwner,pushedAt,defaultBranchRef)
+    [[ -n "$org" ]] && gh_args+=(--owner "$org")
+    
+    local repos
+    repos=$(gh "${gh_args[@]}" | jq 'sort_by(.pushedAt) | reverse')
+    
+    local count=$(echo "$repos" | jq 'length')
+    if [[ "$count" -eq 0 ]]; then
+        log_error "No repos found"
+        exit 1
+    fi
+    
+    echo ""
+    echo "Select a repository to add:"
+    echo ""
+    
+    # Build array and display
+    local i=1
+    while IFS= read -r name; do
+        local short_name=$(basename "$name")
+        local registered=""
+        if jq -e --arg n "$short_name" '.[$n]' "$REPOS_FILE" &>/dev/null; then
+            registered=" ${DIM}(registered)${NC}"
+        fi
+        printf "  %2d) %s%b\n" "$i" "$name" "$registered"
+        ((i++))
+    done < <(echo "$repos" | jq -r '.[].nameWithOwner')
+    
+    echo ""
+    read -r -p "Enter number (or 'q' to quit): " selection
+    
+    [[ "$selection" == "q" ]] && exit 0
+    
+    if [[ ! "$selection" =~ ^[0-9]+$ ]] || [[ "$selection" -lt 1 ]] || [[ "$selection" -gt "$count" ]]; then
+        log_error "Invalid selection"
+        exit 1
+    fi
+    
+    local selected
+    selected=$(echo "$repos" | jq -r ".[$((selection-1))].nameWithOwner")
+    local default_branch
+    default_branch=$(echo "$repos" | jq -r ".[$((selection-1))].defaultBranchRef.name // \"main\"")
+    
+    log_info "Selected: $selected"
+    
+    _add_repo "$selected" "$default_branch"
+}
+
+# Add repo by name
+_add_repo() {
+    local full_name="$1"
+    local default_branch="${2:-}"
+    
+    ensure_gh
+    ensure_repos_file
+    
+    local short_name=$(basename "$full_name")
+    
+    if jq -e --arg n "$short_name" '.[$n]' "$REPOS_FILE" &>/dev/null; then
+        log_error "Repo already registered: $short_name"
+        exit 1
+    fi
+    
+    if [[ -z "$default_branch" ]]; then
+        log_info "Fetching repo info..."
+        default_branch=$(gh repo view "$full_name" --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || echo "main")
+    fi
+    
+    local ssh_url
+    ssh_url=$(gh repo view "$full_name" --json sshUrl -q '.sshUrl')
+    
+    local repo_path="$REPOS_DIR/$short_name.git"
+    
+    if [[ -d "$repo_path" ]]; then
+        log_warn "Directory exists, using existing: $repo_path"
+    else
+        log_info "Cloning bare repository..."
+        gh repo clone "$full_name" "$repo_path" -- --bare
+        
+        git -C "$repo_path" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+        git -C "$repo_path" fetch origin
+    fi
+    
+    jq --arg n "$short_name" \
+       --arg url "$ssh_url" \
+       --arg path "$repo_path" \
+       --arg branch "$default_branch" \
+       --arg full "$full_name" \
+       '.[$n] = {url: $url, path: $path, default_branch: $branch, github: $full, dev_servers: []}' \
+       "$REPOS_FILE" > "$REPOS_FILE.tmp" && mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+    
+    log_success "Repo registered: $short_name"
+    log_info "Create a session with: dev-new $short_name <branch>"
+}
+
+cmd_add() {
+    local full_name="${1:-}"
+    
+    if [[ -z "$full_name" ]]; then
+        log_error "Usage: dev-repo add <owner/repo>"
+        log_info "Or use: dev-repo pick"
+        exit 1
+    fi
+    
+    if [[ "$full_name" != *"/"* ]]; then
+        ensure_gh
+        local user
+        user=$(gh api user -q '.login')
+        full_name="$user/$full_name"
+    fi
+    
+    _add_repo "$full_name"
+}
+
+cmd_list() {
+    ensure_repos_file
+    
+    local json_output=false
+    [[ "${1:-}" == "--json" ]] && json_output=true
+    
+    if $json_output; then
+        jq '.' "$REPOS_FILE"
+    else
+        local count=$(jq 'length' "$REPOS_FILE")
+        if [[ "$count" -eq 0 ]]; then
+            log_info "No repos registered"
+            log_info "Add one with: dev-repo pick"
+            return
+        fi
+        
+        echo ""
+        jq -r 'to_entries[] | "\(.key)\t\(.value.github // .value.url)\t\(.value.default_branch)"' "$REPOS_FILE" | \
+        while IFS=$'\t' read -r name source branch; do
+            echo -e "${CYAN}$name${NC}"
+            echo -e "  ${DIM}$source${NC}"
+            echo -e "  Default branch: $branch"
+            
+            local servers=$(jq -r --arg n "$name" '.[$n].dev_servers | length' "$REPOS_FILE")
+            [[ "$servers" -gt 0 ]] && echo -e "  Dev servers: $servers configured"
+            echo ""
+        done
+    fi
+}
+
+cmd_remove() {
+    local name="${1:-}"
+    
+    if [[ -z "$name" ]]; then
+        log_error "Usage: dev-repo remove <n>"
+        exit 1
+    fi
+    
+    ensure_repos_file
+    
+    if ! jq -e --arg n "$name" '.[$n]' "$REPOS_FILE" &>/dev/null; then
+        log_error "Repo not found: $name"
+        exit 1
+    fi
+    
+    jq --arg n "$name" 'del(.[$n])' "$REPOS_FILE" > "$REPOS_FILE.tmp" && mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+    
+    log_success "Repo unregistered: $name"
+    log_info "Files kept in: $REPOS_DIR/$name.git"
+}
+
+cmd_branches() {
+    local name="${1:-}"
+    local json_output=false
+    [[ "${2:-}" == "--json" ]] && json_output=true
+    
+    if [[ -z "$name" ]]; then
+        log_error "Usage: dev-repo branches <n>"
+        exit 1
+    fi
+    
+    ensure_repos_file
+    
+    local repo_path
+    repo_path=$(jq -r --arg n "$name" '.[$n].path // empty' "$REPOS_FILE")
+    
+    if [[ -z "$repo_path" ]]; then
+        log_error "Repo not found: $name"
+        exit 1
+    fi
+    
+    git -C "$repo_path" fetch --all --prune &>/dev/null || true
+    
+    if $json_output; then
+        git -C "$repo_path" for-each-ref --format='%(refname:short)' refs/remotes/origin | \
+            grep -v HEAD | sed 's/^origin\///' | sort -u | jq -R -s 'split("\n") | map(select(. != ""))'
+    else
+        log_info "Branches for $name:"
+        echo ""
+        git -C "$repo_path" for-each-ref --format='  %(refname:short)' refs/remotes/origin | grep -v HEAD | sed 's/origin\///'
+    fi
+}
+
+cmd_fetch() {
+    local name="${1:-}"
+    
+    if [[ -z "$name" ]]; then
+        log_error "Usage: dev-repo fetch <n>"
+        exit 1
+    fi
+    
+    ensure_repos_file
+    
+    local repo_path
+    repo_path=$(jq -r --arg n "$name" '.[$n].path // empty' "$REPOS_FILE")
+    
+    if [[ -z "$repo_path" ]]; then
+        log_error "Repo not found: $name"
+        exit 1
+    fi
+    
+    log_info "Fetching $name..."
+    git -C "$repo_path" fetch --all --prune
+    log_success "Fetch complete"
+}
+
+cmd_set_servers() {
+    local name="${1:-}"
+    
+    if [[ -z "$name" ]]; then
+        log_error "Usage: dev-repo set-servers <n>"
+        exit 1
+    fi
+    
+    ensure_repos_file
+    
+    if ! jq -e --arg n "$name" '.[$n]' "$REPOS_FILE" &>/dev/null; then
+        log_error "Repo not found: $name"
+        exit 1
+    fi
+    
+    echo ""
+    echo "Configure dev servers for $name"
+    echo "Enter servers one per line."
+    echo "Format: name:command"
+    echo "Example: vite:npm run dev"
+    echo "Empty line to finish."
+    echo ""
+    
+    local servers="[]"
+    while true; do
+        read -r -p "> " line
+        [[ -z "$line" ]] && break
+        
+        local srv_name="${line%%:*}"
+        local srv_cmd="${line#*:}"
+        
+        if [[ -z "$srv_name" || -z "$srv_cmd" || "$srv_name" == "$srv_cmd" ]]; then
+            log_warn "Invalid format, use: name:command"
+            continue
+        fi
+        
+        servers=$(echo "$servers" | jq \
+            --arg name "$srv_name" \
+            --arg cmd "$srv_cmd" \
+            '. + [{name: $name, cmd: $cmd}]')
+        
+        log_success "Added: $srv_name"
+    done
+    
+    jq --arg n "$name" --argjson servers "$servers" \
+       '.[$n].dev_servers = $servers' \
+       "$REPOS_FILE" > "$REPOS_FILE.tmp" && mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+    
+    log_success "Dev servers configured"
+}
+
+cmd_show() {
+    local name="${1:-}"
+    local json_output=false
+    [[ "${2:-}" == "--json" ]] && json_output=true
+    
+    if [[ -z "$name" ]]; then
+        log_error "Usage: dev-repo show <n>"
+        exit 1
+    fi
+    
+    ensure_repos_file
+    
+    local repo
+    repo=$(jq --arg n "$name" '.[$n] // empty' "$REPOS_FILE")
+    
+    if [[ -z "$repo" || "$repo" == "null" ]]; then
+        log_error "Repo not found: $name"
+        exit 1
+    fi
+    
+    if $json_output; then
+        echo "$repo"
+    else
+        echo ""
+        echo -e "${CYAN}$name${NC}"
+        echo "$repo" | jq -r '"  GitHub: \(.github // "n/a")\n  URL: \(.url)\n  Path: \(.path)\n  Default branch: \(.default_branch)"'
+        
+        echo "  Dev servers:"
+        echo "$repo" | jq -r '.dev_servers[] | "    - \(.name): \(.cmd)"' 2>/dev/null || echo "    (none)"
+    fi
+}
+
+case "${1:-}" in
+    list)        shift; cmd_list "$@" ;;
+    add)         shift; cmd_add "$@" ;;
+    remove)      shift; cmd_remove "$@" ;;
+    branches)    shift; cmd_branches "$@" ;;
+    fetch)       shift; cmd_fetch "$@" ;;
+    set-servers) shift; cmd_set_servers "$@" ;;
+    show)        shift; cmd_show "$@" ;;
+    github)      shift; cmd_github "$@" ;;
+    pick)        shift; cmd_pick "$@" ;;
+    --help|-h|"") usage ;;
+    *)           log_error "Unknown command: $1"; usage ;;
+esac

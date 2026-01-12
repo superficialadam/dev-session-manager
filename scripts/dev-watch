@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-watch: Daemon that monitors sessions and sends notifications
+# Usage: dev-watch [--foreground]
+
+DEV_DIR="${DEV_DIR:-$HOME/dev}"
+CONFIG_FILE="$DEV_DIR/config.json"
+SESSIONS_DIR="$DEV_DIR/sessions"
+WATCH_INTERVAL=2  # seconds
+
+# Colors (only used in foreground mode)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+DIM='\033[2m'
+NC='\033[0m'
+
+FOREGROUND=false
+[[ "${1:-}" == "--foreground" || "${1:-}" == "-f" ]] && FOREGROUND=true
+
+log() {
+    local level="$1"
+    shift
+    local msg="$*"
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    if $FOREGROUND; then
+        case "$level" in
+            INFO) echo -e "${BLUE}[$ts]${NC} $msg" ;;
+            WARN) echo -e "${YELLOW}[$ts]${NC} $msg" ;;
+            ERROR) echo -e "${RED}[$ts]${NC} $msg" ;;
+            SUCCESS) echo -e "${GREEN}[$ts]${NC} $msg" ;;
+            *) echo "[$ts] $msg" ;;
+        esac
+    else
+        echo "[$ts] [$level] $msg"
+    fi
+}
+
+# Load notification config
+get_ntfy_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        NTFY_SERVER=$(jq -r '.notifications.ntfy_server // "https://ntfy.sh"' "$CONFIG_FILE")
+        NTFY_TOPIC=$(jq -r '.notifications.ntfy_topic // ""' "$CONFIG_FILE")
+    else
+        NTFY_SERVER="https://ntfy.sh"
+        NTFY_TOPIC=""
+    fi
+}
+
+send_notification() {
+    local title="$1"
+    local message="$2"
+    local priority="${3:-default}"
+    local tags="${4:-}"
+    
+    get_ntfy_config
+    
+    if [[ -z "$NTFY_TOPIC" ]]; then
+        log WARN "No ntfy topic configured, skipping notification"
+        return
+    fi
+    
+    local url="$NTFY_SERVER/$NTFY_TOPIC"
+    
+    local headers=(-H "Title: $title" -H "Priority: $priority")
+    [[ -n "$tags" ]] && headers+=(-H "Tags: $tags")
+    
+    curl -s -o /dev/null "${headers[@]}" -d "$message" "$url" || {
+        log ERROR "Failed to send notification"
+    }
+    
+    log INFO "Notification sent: $title"
+}
+
+get_agent_state() {
+    local session="$1"
+    
+    local content
+    content=$(tmux capture-pane -t "$session:agent" -p -S -50 2>/dev/null || echo "")
+    
+    if [[ -z "$content" ]]; then
+        echo "unknown"
+        return
+    fi
+    
+    local last_line
+    last_line=$(echo "$content" | grep -v '^$' | tail -1)
+    
+    # OpenCode: ❯ or >
+    # Claude Code: >
+    if [[ "$last_line" =~ [❯\>][[:space:]]*$ ]]; then
+        echo "idle"
+    elif [[ "$last_line" =~ (Error|error|ERROR|failed|Failed|FAILED) ]]; then
+        echo "error"
+    elif [[ "$last_line" =~ (Thinking|Working|Running|Searching|Reading|Writing) ]]; then
+        echo "working"
+    else
+        # Default to working if we can't tell
+        echo "working"
+    fi
+}
+
+capture_response() {
+    local session="$1"
+    
+    # Capture last 100 lines
+    tmux capture-pane -t "$session:agent" -p -S -100 2>/dev/null || echo ""
+}
+
+# State tracking
+declare -A PREV_STATES
+declare -A LAST_CAPTURES
+
+watch_loop() {
+    log INFO "Starting watch loop (interval: ${WATCH_INTERVAL}s)"
+    
+    while true; do
+        # Find all sessions with meta.json
+        for session_dir in "$SESSIONS_DIR"/*/; do
+            [[ ! -d "$session_dir" ]] && continue
+            
+            local session_name
+            session_name=$(basename "$session_dir")
+            
+            # Skip if no tmux session
+            if ! tmux has-session -t "$session_name" 2>/dev/null; then
+                continue
+            fi
+            
+            # Get current state
+            local current_state
+            current_state=$(get_agent_state "$session_name")
+            
+            local prev_state="${PREV_STATES[$session_name]:-unknown}"
+            
+            # Detect transitions
+            if [[ "$prev_state" == "working" && "$current_state" == "idle" ]]; then
+                log SUCCESS "Agent finished: $session_name"
+                
+                # Capture the response
+                local response
+                response=$(capture_response "$session_name")
+                
+                # Log to history
+                local history_file="$session_dir/history.jsonl"
+                echo "{\"ts\": \"$(date -Iseconds)\", \"type\": \"response\", \"content\": $(echo "$response" | tail -50 | jq -Rs .)}" >> "$history_file"
+                
+                # Update meta
+                local meta_file="$session_dir/meta.json"
+                if [[ -f "$meta_file" ]]; then
+                    jq --arg ts "$(date -Iseconds)" '.last_activity = $ts | .status = "idle"' "$meta_file" > "$meta_file.tmp" && mv "$meta_file.tmp" "$meta_file"
+                fi
+                
+                # Get repo/branch for notification
+                local repo branch
+                repo=$(jq -r '.repo // "unknown"' "$meta_file" 2>/dev/null || echo "unknown")
+                branch=$(jq -r '.branch // "unknown"' "$meta_file" 2>/dev/null || echo "unknown")
+                
+                # Send notification
+                send_notification \
+                    "Agent Done: $session_name" \
+                    "Finished working on $repo ($branch)" \
+                    "default" \
+                    "white_check_mark"
+            
+            elif [[ "$prev_state" == "working" && "$current_state" == "error" ]]; then
+                log ERROR "Agent error: $session_name"
+                
+                send_notification \
+                    "Agent Error: $session_name" \
+                    "Error detected in $session_name" \
+                    "high" \
+                    "x"
+            
+            elif [[ "$prev_state" != "working" && "$current_state" == "working" ]]; then
+                log INFO "Agent started: $session_name"
+                
+                # Update meta
+                local meta_file="$session_dir/meta.json"
+                if [[ -f "$meta_file" ]]; then
+                    jq --arg ts "$(date -Iseconds)" '.last_activity = $ts | .status = "working"' "$meta_file" > "$meta_file.tmp" && mv "$meta_file.tmp" "$meta_file"
+                fi
+            fi
+            
+            # Update state
+            PREV_STATES[$session_name]="$current_state"
+            
+        done
+        
+        sleep "$WATCH_INTERVAL"
+    done
+}
+
+cleanup() {
+    log INFO "Shutting down..."
+    exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
+# Main
+if $FOREGROUND; then
+    log INFO "Running in foreground mode"
+    log INFO "Press Ctrl+C to stop"
+    echo ""
+fi
+
+mkdir -p "$SESSIONS_DIR"
+watch_loop

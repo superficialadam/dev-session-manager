@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-new: Create a new development session with worktree, tmux, and ttyd
+# Usage: dev-new <repo> <branch> [--agent opencode|claude]
+
+DEV_DIR="${DEV_DIR:-$HOME/dev}"
+CONFIG_FILE="$DEV_DIR/config.json"
+REPOS_FILE="$DEV_DIR/repos.json"
+SESSIONS_DIR="$DEV_DIR/sessions"
+WORKTREES_DIR="$DEV_DIR/worktrees"
+
+# ttyd port range
+TTYD_PORT_MIN=7700
+TTYD_PORT_MAX=7799
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}→${NC} $1"; }
+log_success() { echo -e "${GREEN}✓${NC} $1"; }
+log_warn() { echo -e "${YELLOW}!${NC} $1"; }
+log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+
+usage() {
+    cat << EOF
+Usage: dev-new <repo> <branch> [options]
+
+Create a new development session with worktree, tmux, and AI agent.
+
+Arguments:
+  repo      Name of registered repo (see: dev-repo list)
+  branch    Branch name (created if doesn't exist)
+
+Options:
+  --agent <n>       Agent to use: opencode, claude (default: from config)
+  --no-agent           Don't start an agent
+  --no-servers         Don't start dev servers
+  --no-ttyd            Don't start ttyd web terminal
+  --help               Show this help
+
+Examples:
+  dev-new my-app feature/auth
+  dev-new my-app fix/bug-123 --agent claude
+EOF
+    exit 0
+}
+
+# Find next available port in range
+find_available_port() {
+    for port in $(seq $TTYD_PORT_MIN $TTYD_PORT_MAX); do
+        if ! ss -tlnp | grep -q ":$port "; then
+            echo "$port"
+            return
+        fi
+    done
+    echo ""
+}
+
+# Parse arguments
+REPO=""
+BRANCH=""
+AGENT=""
+START_AGENT=true
+START_SERVERS=true
+START_TTYD=true
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --agent)
+            AGENT="$2"
+            shift 2
+            ;;
+        --no-agent)
+            START_AGENT=false
+            shift
+            ;;
+        --no-servers)
+            START_SERVERS=false
+            shift
+            ;;
+        --no-ttyd)
+            START_TTYD=false
+            shift
+            ;;
+        --help|-h)
+            usage
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            if [[ -z "$REPO" ]]; then
+                REPO="$1"
+            elif [[ -z "$BRANCH" ]]; then
+                BRANCH="$1"
+            else
+                log_error "Too many arguments"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$REPO" || -z "$BRANCH" ]]; then
+    log_error "Missing required arguments"
+    usage
+fi
+
+if [[ ! -f "$REPOS_FILE" ]]; then
+    log_error "Repos file not found: $REPOS_FILE"
+    log_info "Run: dev-repo pick"
+    exit 1
+fi
+
+# Get repo info
+REPO_INFO=$(jq -r --arg name "$REPO" '.[$name] // empty' "$REPOS_FILE")
+if [[ -z "$REPO_INFO" ]]; then
+    log_error "Repo not found: $REPO"
+    log_info "Available repos:"
+    jq -r 'keys[]' "$REPOS_FILE" | sed 's/^/  /'
+    exit 1
+fi
+
+REPO_PATH=$(echo "$REPO_INFO" | jq -r '.path')
+DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch // "main"')
+DEV_SERVERS=$(echo "$REPO_INFO" | jq -r '.dev_servers // []')
+
+if [[ -z "$AGENT" ]]; then
+    AGENT=$(jq -r '.default_agent // "opencode"' "$CONFIG_FILE" 2>/dev/null || echo "opencode")
+fi
+
+# Generate session name from branch
+SESSION_NAME=$(echo "$BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log_error "Session already exists: $SESSION_NAME"
+    log_info "Attach with: dev-attach $SESSION_NAME"
+    exit 1
+fi
+
+WORKTREE_PATH="$WORKTREES_DIR/$SESSION_NAME"
+SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+
+if [[ -d "$WORKTREE_PATH" ]]; then
+    log_error "Worktree path already exists: $WORKTREE_PATH"
+    exit 1
+fi
+
+log_info "Creating session: $SESSION_NAME"
+log_info "Repo: $REPO ($REPO_PATH)"
+log_info "Branch: $BRANCH"
+log_info "Agent: $AGENT"
+
+# Fetch latest
+log_info "Fetching latest..."
+git -C "$REPO_PATH" fetch --all --prune
+
+# Check if branch exists
+BRANCH_EXISTS=false
+if git -C "$REPO_PATH" show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
+    BRANCH_EXISTS=true
+elif git -C "$REPO_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
+    BRANCH_EXISTS=true
+fi
+
+# Create worktree
+log_info "Creating worktree..."
+mkdir -p "$WORKTREES_DIR"
+if $BRANCH_EXISTS; then
+    git -C "$REPO_PATH" worktree add "$WORKTREE_PATH" "$BRANCH"
+else
+    log_info "Branch doesn't exist, creating from $DEFAULT_BRANCH..."
+    git -C "$REPO_PATH" worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"
+fi
+log_success "Worktree created: $WORKTREE_PATH"
+
+# Create session directory
+mkdir -p "$SESSION_DIR"
+
+# Find available ttyd port
+TTYD_PORT=""
+TTYD_PID=""
+if $START_TTYD; then
+    TTYD_PORT=$(find_available_port)
+    if [[ -z "$TTYD_PORT" ]]; then
+        log_warn "No available ttyd ports in range $TTYD_PORT_MIN-$TTYD_PORT_MAX"
+        START_TTYD=false
+    fi
+fi
+
+# Create meta.json
+cat > "$SESSION_DIR/meta.json" << EOF
+{
+  "name": "$SESSION_NAME",
+  "repo": "$REPO",
+  "branch": "$BRANCH",
+  "worktree": "$WORKTREE_PATH",
+  "agent": "$AGENT",
+  "tmux_session": "$SESSION_NAME",
+  "ttyd_port": ${TTYD_PORT:-null},
+  "created_at": "$(date -Iseconds)",
+  "status": "idle",
+  "last_activity": "$(date -Iseconds)"
+}
+EOF
+log_success "Session metadata created"
+
+# Create tmux session with 4 windows
+log_info "Creating tmux session..."
+
+# Window 0: Agent
+tmux new-session -d -s "$SESSION_NAME" -n "agent" -c "$WORKTREE_PATH"
+
+# Window 1: Servers
+tmux new-window -t "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH"
+
+# Window 2: Neovim
+tmux new-window -t "$SESSION_NAME" -n "nvim" -c "$WORKTREE_PATH"
+
+# Window 3: Terminal
+tmux new-window -t "$SESSION_NAME" -n "term" -c "$WORKTREE_PATH"
+
+log_success "Tmux session created with 4 windows"
+
+# Start ttyd for this session (agent window)
+if $START_TTYD && [[ -n "$TTYD_PORT" ]]; then
+    log_info "Starting ttyd on port $TTYD_PORT..."
+    
+    # Start ttyd in background, attached to the agent window
+    nohup ttyd -p "$TTYD_PORT" -W tmux attach -t "$SESSION_NAME:agent" \
+        > "$SESSION_DIR/ttyd.log" 2>&1 &
+    TTYD_PID=$!
+    
+    # Store PID
+    echo "$TTYD_PID" > "$SESSION_DIR/ttyd.pid"
+    
+    # Update meta with PID
+    jq --arg pid "$TTYD_PID" '.ttyd_pid = ($pid | tonumber)' \
+        "$SESSION_DIR/meta.json" > "$SESSION_DIR/meta.json.tmp" \
+        && mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json"
+    
+    log_success "ttyd started (PID: $TTYD_PID, port: $TTYD_PORT)"
+fi
+
+# Start agent in window 0
+if $START_AGENT; then
+    log_info "Starting agent: $AGENT..."
+    case "$AGENT" in
+        opencode)
+            tmux send-keys -t "$SESSION_NAME:agent" "opencode" Enter
+            ;;
+        claude)
+            tmux send-keys -t "$SESSION_NAME:agent" "claude" Enter
+            ;;
+        *)
+            log_warn "Unknown agent: $AGENT, not starting"
+            ;;
+    esac
+fi
+
+# Start nvim in window 2
+log_info "Starting neovim..."
+tmux send-keys -t "$SESSION_NAME:nvim" "nvim ." Enter
+
+# Start dev servers in window 1
+if $START_SERVERS; then
+    SERVER_COUNT=$(echo "$DEV_SERVERS" | jq 'length')
+    if [[ "$SERVER_COUNT" -gt 0 ]]; then
+        log_info "Starting $SERVER_COUNT dev server(s)..."
+        
+        FIRST=true
+        echo "$DEV_SERVERS" | jq -c '.[]' | while read -r server; do
+            SERVER_NAME=$(echo "$server" | jq -r '.name')
+            SERVER_CMD=$(echo "$server" | jq -r '.cmd')
+            
+            if $FIRST; then
+                tmux send-keys -t "$SESSION_NAME:servers" "$SERVER_CMD" Enter
+                FIRST=false
+            else
+                tmux split-window -t "$SESSION_NAME:servers" -v -c "$WORKTREE_PATH"
+                tmux send-keys -t "$SESSION_NAME:servers" "$SERVER_CMD" Enter
+            fi
+        done
+        
+        tmux select-layout -t "$SESSION_NAME:servers" tiled
+    fi
+fi
+
+# Select agent window
+tmux select-window -t "$SESSION_NAME:agent"
+
+log_success "Session ready: $SESSION_NAME"
+echo ""
+echo "Commands:"
+echo "  dev-attach $SESSION_NAME          # attach in terminal"
+echo "  dev-send $SESSION_NAME \"prompt\"   # send prompt"
+if [[ -n "$TTYD_PORT" ]]; then
+echo ""
+echo "Web terminal:"
+echo "  http://localhost:$TTYD_PORT"
+fi

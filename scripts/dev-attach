@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-attach: Attach to a development session
+# Usage: dev-attach <session> [--window <name>]
+
+DEV_DIR="${DEV_DIR:-$HOME/dev}"
+SESSIONS_DIR="$DEV_DIR/sessions"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+log_info() { echo -e "${BLUE}→${NC} $1"; }
+
+usage() {
+    cat << EOF
+Usage: dev-attach <session> [options]
+
+Attach to a development session.
+
+Options:
+  --window, -w <name>    Attach to specific window (agent, servers, nvim, term)
+  --list-windows         List windows in session
+  --help                 Show this help
+
+Examples:
+  dev-attach feature-auth
+  dev-attach feature-auth -w nvim
+  dev-attach feature-auth --window agent
+EOF
+    exit 0
+}
+
+SESSION_NAME=""
+WINDOW=""
+LIST_WINDOWS=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --window|-w)
+            WINDOW="$2"
+            shift 2
+            ;;
+        --list-windows)
+            LIST_WINDOWS=true
+            shift
+            ;;
+        --help|-h)
+            usage
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            SESSION_NAME="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$SESSION_NAME" ]]; then
+    log_error "Session name required"
+    echo ""
+    echo "Available sessions:"
+    dev-list 2>/dev/null || echo "  (none)"
+    exit 1
+fi
+
+# Check if session exists
+if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log_error "Tmux session not found: $SESSION_NAME"
+    
+    # Check if session dir exists (session was created but tmux died)
+    if [[ -d "$SESSIONS_DIR/$SESSION_NAME" ]]; then
+        echo ""
+        echo "Session directory exists but tmux is not running."
+        echo "You may want to delete and recreate:"
+        echo "  dev-delete $SESSION_NAME"
+    fi
+    exit 1
+fi
+
+if $LIST_WINDOWS; then
+    log_info "Windows in $SESSION_NAME:"
+    tmux list-windows -t "$SESSION_NAME" -F "  #I: #W"
+    exit 0
+fi
+
+# Attach
+if [[ -n "$WINDOW" ]]; then
+    # Validate window exists
+    if ! tmux select-window -t "$SESSION_NAME:$WINDOW" 2>/dev/null; then
+        log_error "Window not found: $WINDOW"
+        echo ""
+        echo "Available windows:"
+        tmux list-windows -t "$SESSION_NAME" -F "  #W"
+        exit 1
+    fi
+fi
+
+# Check if we're already in tmux
+if [[ -n "${TMUX:-}" ]]; then
+    # Switch client
+    if [[ -n "$WINDOW" ]]; then
+        tmux switch-client -t "$SESSION_NAME:$WINDOW"
+    else
+        tmux switch-client -t "$SESSION_NAME"
+    fi
+else
+    # Attach
+    if [[ -n "$WINDOW" ]]; then
+        tmux attach-session -t "$SESSION_NAME:$WINDOW"
+    else
+        tmux attach-session -t "$SESSION_NAME"
+    fi
+fi

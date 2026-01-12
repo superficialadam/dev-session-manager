@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-delete: Delete a development session
+# Usage: dev-delete <session> [options]
+
+DEV_DIR="${DEV_DIR:-$HOME/dev}"
+SESSIONS_DIR="$DEV_DIR/sessions"
+WORKTREES_DIR="$DEV_DIR/worktrees"
+REPOS_FILE="$DEV_DIR/repos.json"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}→${NC} $1"; }
+log_success() { echo -e "${GREEN}✓${NC} $1"; }
+log_warn() { echo -e "${YELLOW}!${NC} $1"; }
+log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+
+usage() {
+    cat << EOF
+Usage: dev-delete <session> [options]
+
+Delete a development session, its worktree, tmux session, and ttyd process.
+
+Options:
+  --keep-branch    Keep the git branch (just remove worktree)
+  --force          Skip confirmation
+  --help           Show this help
+
+Examples:
+  dev-delete feature-auth
+  dev-delete feature-auth --keep-branch
+EOF
+    exit 0
+}
+
+SESSION_NAME=""
+KEEP_BRANCH=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --keep-branch)
+            KEEP_BRANCH=true
+            shift
+            ;;
+        --force|-f)
+            FORCE=true
+            shift
+            ;;
+        --help|-h)
+            usage
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            SESSION_NAME="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$SESSION_NAME" ]]; then
+    log_error "Session name required"
+    usage
+fi
+
+SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+WORKTREE_PATH="$WORKTREES_DIR/$SESSION_NAME"
+
+if [[ ! -d "$SESSION_DIR" ]]; then
+    log_error "Session not found: $SESSION_NAME"
+    exit 1
+fi
+
+# Load metadata
+META_FILE="$SESSION_DIR/meta.json"
+REPO="unknown"
+BRANCH="unknown"
+TTYD_PID=""
+TTYD_PORT=""
+
+if [[ -f "$META_FILE" ]]; then
+    REPO=$(jq -r '.repo // "unknown"' "$META_FILE")
+    BRANCH=$(jq -r '.branch // "unknown"' "$META_FILE")
+    WORKTREE_PATH=$(jq -r '.worktree // ""' "$META_FILE")
+    TTYD_PID=$(jq -r '.ttyd_pid // ""' "$META_FILE")
+    TTYD_PORT=$(jq -r '.ttyd_port // ""' "$META_FILE")
+fi
+
+# Confirmation
+if ! $FORCE; then
+    echo ""
+    echo "About to delete session: $SESSION_NAME"
+    echo "  Repo: $REPO"
+    echo "  Branch: $BRANCH"
+    echo "  Worktree: $WORKTREE_PATH"
+    [[ -n "$TTYD_PORT" && "$TTYD_PORT" != "null" ]] && echo "  ttyd port: $TTYD_PORT"
+    if ! $KEEP_BRANCH; then
+        echo -e "  ${YELLOW}Branch will be deleted${NC}"
+    fi
+    echo ""
+    read -r -p "Continue? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_info "Cancelled"
+        exit 0
+    fi
+fi
+
+# Kill ttyd process
+if [[ -n "$TTYD_PID" && "$TTYD_PID" != "null" ]]; then
+    if kill -0 "$TTYD_PID" 2>/dev/null; then
+        log_info "Stopping ttyd (PID: $TTYD_PID)..."
+        kill "$TTYD_PID" 2>/dev/null || true
+        sleep 0.5
+        # Force kill if still running
+        kill -9 "$TTYD_PID" 2>/dev/null || true
+        log_success "ttyd stopped"
+    else
+        log_info "ttyd process not running"
+    fi
+fi
+
+# Also check for ttyd.pid file
+if [[ -f "$SESSION_DIR/ttyd.pid" ]]; then
+    PID_FROM_FILE=$(cat "$SESSION_DIR/ttyd.pid")
+    if [[ -n "$PID_FROM_FILE" ]] && kill -0 "$PID_FROM_FILE" 2>/dev/null; then
+        log_info "Stopping ttyd from pid file..."
+        kill "$PID_FROM_FILE" 2>/dev/null || true
+    fi
+fi
+
+# Kill tmux session
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log_info "Killing tmux session..."
+    tmux kill-session -t "$SESSION_NAME"
+    log_success "Tmux session killed"
+else
+    log_info "No tmux session running"
+fi
+
+# Remove worktree
+if [[ -n "$WORKTREE_PATH" && -d "$WORKTREE_PATH" ]]; then
+    log_info "Removing worktree..."
+    
+    REPO_PATH=$(jq -r --arg r "$REPO" '.[$r].path // empty' "$REPOS_FILE" 2>/dev/null || echo "")
+    
+    if [[ -n "$REPO_PATH" && -d "$REPO_PATH" ]]; then
+        git -C "$REPO_PATH" worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
+            log_warn "git worktree remove failed, removing directory manually"
+            rm -rf "$WORKTREE_PATH"
+        }
+    else
+        rm -rf "$WORKTREE_PATH"
+    fi
+    log_success "Worktree removed"
+else
+    log_info "No worktree directory found"
+fi
+
+# Delete branch (if not keeping)
+if ! $KEEP_BRANCH; then
+    REPO_PATH=$(jq -r --arg r "$REPO" '.[$r].path // empty' "$REPOS_FILE" 2>/dev/null || echo "")
+    if [[ -n "$REPO_PATH" && -d "$REPO_PATH" && "$BRANCH" != "unknown" ]]; then
+        log_info "Deleting local branch: $BRANCH"
+        git -C "$REPO_PATH" branch -D "$BRANCH" 2>/dev/null || log_warn "Local branch not found"
+        log_info "Remote branch NOT deleted. Delete manually with:"
+        echo "  git push origin --delete $BRANCH"
+    fi
+fi
+
+# Remove session directory
+log_info "Removing session directory..."
+rm -rf "$SESSION_DIR"
+log_success "Session directory removed"
+
+log_success "Session deleted: $SESSION_NAME"

@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-list: List development sessions
+# Usage: dev-list [options]
+
+DEV_DIR="${DEV_DIR:-$HOME/dev}"
+SESSIONS_DIR="$DEV_DIR/sessions"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+NC='\033[0m'
+
+usage() {
+    cat << EOF
+Usage: dev-list [options]
+
+List all development sessions.
+
+Options:
+  --active     Only show sessions with attached clients
+  --json       Output as JSON
+  --help       Show this help
+EOF
+    exit 0
+}
+
+get_agent_state() {
+    local session="$1"
+    
+    # Capture last 20 lines of agent pane
+    local content
+    content=$(tmux capture-pane -t "$session:agent" -p -S -20 2>/dev/null || echo "")
+    
+    if [[ -z "$content" ]]; then
+        echo "unknown"
+        return
+    fi
+    
+    # Get last non-empty line
+    local last_line
+    last_line=$(echo "$content" | grep -v '^$' | tail -1)
+    
+    # Check for idle prompts
+    # OpenCode: ends with ❯ or >
+    # Claude Code: ends with >
+    if [[ "$last_line" =~ [❯\>][[:space:]]*$ ]]; then
+        echo "idle"
+    elif [[ "$last_line" =~ (Thinking|Working|Running|Searching) ]]; then
+        echo "working"
+    elif [[ "$last_line" =~ (Error|error|failed|Failed) ]]; then
+        echo "error"
+    else
+        echo "working"
+    fi
+}
+
+get_session_info() {
+    local session_name="$1"
+    local meta_file="$SESSIONS_DIR/$session_name/meta.json"
+    
+    if [[ ! -f "$meta_file" ]]; then
+        return 1
+    fi
+    
+    local meta
+    meta=$(cat "$meta_file")
+    
+    # Check if tmux session exists
+    local tmux_exists=false
+    local attached=false
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        tmux_exists=true
+        # Check if attached
+        if tmux list-clients -t "$session_name" 2>/dev/null | grep -q .; then
+            attached=true
+        fi
+    fi
+    
+    # Get agent state
+    local agent_state="stopped"
+    if $tmux_exists; then
+        agent_state=$(get_agent_state "$session_name")
+    fi
+    
+    # Output JSON
+    echo "$meta" | jq \
+        --arg tmux_exists "$tmux_exists" \
+        --arg attached "$attached" \
+        --arg agent_state "$agent_state" \
+        '. + {tmux_exists: ($tmux_exists == "true"), attached: ($attached == "true"), agent_state: $agent_state}'
+}
+
+list_sessions() {
+    local filter_active=false
+    local json_output=false
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --active) filter_active=true; shift ;;
+            --json) json_output=true; shift ;;
+            *) shift ;;
+        esac
+    done
+    
+    mkdir -p "$SESSIONS_DIR"
+    
+    local sessions=()
+    local json_array="[]"
+    
+    for session_dir in "$SESSIONS_DIR"/*/; do
+        [[ ! -d "$session_dir" ]] && continue
+        
+        local session_name
+        session_name=$(basename "$session_dir")
+        
+        local info
+        if ! info=$(get_session_info "$session_name" 2>/dev/null); then
+            continue
+        fi
+        
+        local attached
+        attached=$(echo "$info" | jq -r '.attached')
+        
+        # Filter if --active
+        if $filter_active && [[ "$attached" != "true" ]]; then
+            continue
+        fi
+        
+        sessions+=("$session_name")
+        json_array=$(echo "$json_array" | jq --argjson info "$info" '. + [$info]')
+    done
+    
+    if $json_output; then
+        echo "$json_array"
+        return
+    fi
+    
+    if [[ ${#sessions[@]} -eq 0 ]]; then
+        echo -e "${DIM}No sessions found${NC}"
+        echo ""
+        echo "Create one with: dev-new <repo> <branch>"
+        return
+    fi
+    
+    echo ""
+    for session_name in "${sessions[@]}"; do
+        local info
+        info=$(get_session_info "$session_name")
+        
+        local repo branch agent_state attached tmux_exists agent
+        repo=$(echo "$info" | jq -r '.repo')
+        branch=$(echo "$info" | jq -r '.branch')
+        agent_state=$(echo "$info" | jq -r '.agent_state')
+        attached=$(echo "$info" | jq -r '.attached')
+        tmux_exists=$(echo "$info" | jq -r '.tmux_exists')
+        agent=$(echo "$info" | jq -r '.agent')
+        
+        # Status indicator
+        local status_icon status_color
+        case "$agent_state" in
+            idle)
+                status_icon="●"
+                status_color="$GREEN"
+                ;;
+            working)
+                status_icon="◐"
+                status_color="$YELLOW"
+                ;;
+            error)
+                status_icon="●"
+                status_color="$RED"
+                ;;
+            stopped)
+                status_icon="○"
+                status_color="$DIM"
+                ;;
+            *)
+                status_icon="?"
+                status_color="$DIM"
+                ;;
+        esac
+        
+        # Attached indicator
+        local attach_indicator=""
+        if [[ "$attached" == "true" ]]; then
+            attach_indicator=" ${GREEN}(attached)${NC}"
+        fi
+        
+        echo -e "${status_color}${status_icon}${NC} ${CYAN}${session_name}${NC}${attach_indicator}"
+        echo -e "  ${DIM}${repo}${NC} → ${branch}"
+        echo -e "  Agent: ${agent} (${agent_state})"
+        
+        if [[ "$tmux_exists" != "true" ]]; then
+            echo -e "  ${RED}tmux session not running${NC}"
+        fi
+        
+        echo ""
+    done
+}
+
+case "${1:-}" in
+    --help|-h)
+        usage
+        ;;
+    *)
+        list_sessions "$@"
+        ;;
+esac
