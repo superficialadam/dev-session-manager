@@ -92,11 +92,18 @@ cmd_github() {
         esac
     done
     
-    local gh_args=(repo list --limit "$limit" --json name,nameWithOwner,description,pushedAt,isPrivate,isFork)
-    [[ -n "$org" ]] && gh_args+=(--owner "$org")
-    
     local repos
-    repos=$(gh "${gh_args[@]}" | jq 'sort_by(.pushedAt) | reverse')
+    local fields="name,nameWithOwner,description,pushedAt,isPrivate,isFork"
+    
+    if [[ -n "$org" ]]; then
+        repos=$(gh repo list "$org" --limit "$limit" --json "$fields" | jq 'sort_by(.pushedAt) | reverse')
+    else
+        # Fetch both user and blendalabs repos
+        local user_repos work_repos
+        user_repos=$(gh repo list --limit "$limit" --json "$fields")
+        work_repos=$(gh repo list blendalabs --limit "$limit" --json "$fields")
+        repos=$(echo "$user_repos" "$work_repos" | jq -s 'add | unique_by(.nameWithOwner) | sort_by(.pushedAt) | reverse')
+    fi
     
     if $json_output; then
         echo "$repos"
@@ -154,11 +161,18 @@ cmd_pick() {
     
     log_info "Fetching repos from GitHub..."
     
-    local gh_args=(repo list --limit 30 --json name,nameWithOwner,pushedAt,defaultBranchRef)
-    [[ -n "$org" ]] && gh_args+=(--owner "$org")
-    
     local repos
-    repos=$(gh "${gh_args[@]}" | jq 'sort_by(.pushedAt) | reverse')
+    local fields="name,nameWithOwner,pushedAt,defaultBranchRef"
+    
+    if [[ -n "$org" ]]; then
+        repos=$(gh repo list "$org" --limit 30 --json "$fields" | jq 'sort_by(.pushedAt) | reverse')
+    else
+        # Fetch both user and blendalabs repos
+        local user_repos work_repos
+        user_repos=$(gh repo list --limit 30 --json "$fields")
+        work_repos=$(gh repo list blendalabs --limit 30 --json "$fields")
+        repos=$(echo "$user_repos" "$work_repos" | jq -s 'add | unique_by(.nameWithOwner) | sort_by(.pushedAt) | reverse')
+    fi
     
     local count=$(echo "$repos" | jq 'length')
     if [[ "$count" -eq 0 ]]; then
