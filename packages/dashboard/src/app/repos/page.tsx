@@ -1,5 +1,5 @@
 import { getRepos, getGitHubRepos, getGitHubOrgs } from '@/lib/sessions'
-import { GitHubPicker } from '@/components/github-picker'
+import { GitHubRepoPicker } from '@/components/github-repo-picker'
 import { RepoCard } from '@/components/repo-card'
 
 export const dynamic = 'force-dynamic'
@@ -14,9 +14,8 @@ export default async function ReposPage() {
     getGitHubOrgs()
   ])
   
-  // Filter out already registered repos
-  const registeredNames = new Set(Object.values(repos).map(r => r.name_with_owner).filter(Boolean))
-  const availableRepos = githubRepos.filter(r => !registeredNames.has(r.nameWithOwner))
+  // Get list of registered repo names (short names)
+  const registeredRepos = Object.keys(repos)
 
   return (
     <div className="space-y-8">
@@ -30,7 +29,7 @@ export default async function ReposPage() {
       {/* GitHub Picker */}
       <div className="bg-surface-1 border border-neutral-800 rounded-xl p-6">
         <h2 className="text-sm font-medium text-neutral-400 mb-4">Add from GitHub</h2>
-        <GitHubPicker repos={availableRepos} orgs={orgs} />
+        <GitHubRepoPicker githubRepos={githubRepos} registeredRepos={registeredRepos} />
       </div>
 
       {/* Registered repos */}

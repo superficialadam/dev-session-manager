@@ -10,7 +10,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULT_DEV_DIR="$HOME/.dev-sessions"
 DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
 SESSIONS_DIR="$DEV_DIR/sessions"
-WORKTREES_DIR="$DEV_DIR/worktrees"
+CODE_DIR="$HOME/CODE"
+WORKTREES_DIR="$CODE_DIR/worktrees"
 REPOS_FILE="$DEV_DIR/repos.json"
 
 # Colors

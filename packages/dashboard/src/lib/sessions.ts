@@ -5,8 +5,9 @@ import path from 'path'
 
 const execAsync = promisify(exec)
 
-const DEV_DIR = process.env.DEV_DIR || `${process.env.HOME}/dev`
-const SCRIPTS_DIR = `${DEV_DIR}/scripts`
+const DEV_DIR = process.env.DEV_DIR || `${process.env.HOME}/.dev-sessions`
+// Scripts are in sibling directory 'scripts' relative to dashboard
+const SCRIPTS_DIR = process.env.SCRIPTS_DIR || path.resolve(process.cwd(), '../scripts')
 const SESSIONS_DIR = `${DEV_DIR}/sessions`
 const REPOS_FILE = `${DEV_DIR}/repos.json`
 
@@ -97,6 +98,12 @@ export async function getGitHubRepos(org?: string): Promise<any[]> {
   } catch {
     return []
   }
+}
+
+export async function getGitHubOrgs(): Promise<string[]> {
+  // TODO: Implement org fetching in dev-repo script
+  // For now return empty array or hardcoded list if needed
+  return []
 }
 
 export async function createSession(

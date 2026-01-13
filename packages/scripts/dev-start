@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-start: Restart dev servers for an existing session
+# Usage: dev-start <session>
+
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DEFAULT_DEV_DIR="$HOME/.dev-sessions"
+DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
+REPOS_FILE="$DEV_DIR/repos.json"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}→${NC} $1"; }
+log_success() { echo -e "${GREEN}✓${NC} $1"; }
+log_warn() { echo -e "${YELLOW}!${NC} $1"; }
+log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+
+if [[ -z "${1:-}" ]]; then
+    # Try to detect current tmux session
+    if [[ -n "${TMUX:-}" ]]; then
+        SESSION_NAME=$(tmux display-message -p '#S')
+        log_info "Detected current session: $SESSION_NAME"
+    else
+        log_error "Usage: dev-start <session>"
+        log_info "Or run from inside a tmux session."
+        exit 1
+    fi
+else
+    SESSION_NAME="$1"
+fi
+
+if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log_error "Session not found: $SESSION_NAME"
+    exit 1
+fi
+
+# Get repo name from session meta if available, or try to guess/ask?
+# Better to read from meta.json if possible
+SESSION_DIR="$DEV_DIR/sessions/$SESSION_NAME"
+META_FILE="$SESSION_DIR/meta.json"
+
+if [[ -f "$META_FILE" ]]; then
+    REPO=$(jq -r '.repo' "$META_FILE")
+    WORKTREE_PATH=$(jq -r '.worktree' "$META_FILE")
+else
+    log_error "Session metadata not found. Cannot determine repository."
+    exit 1
+fi
+
+# Get server config
+REPO_INFO=$(jq -r --arg name "$REPO" '.[$name] // empty' "$REPOS_FILE")
+if [[ -z "$REPO_INFO" ]]; then
+    log_error "Repo configuration not found for: $REPO"
+    exit 1
+fi
+
+DEV_SERVERS=$(echo "$REPO_INFO" | jq -r '.dev_servers // []')
+SERVER_COUNT=$(echo "$DEV_SERVERS" | jq 'length')
+
+if [[ "$SERVER_COUNT" -eq 0 ]]; then
+    # Try auto-detection from package.json
+    if [[ -f "$WORKTREE_PATH/package.json" ]]; then
+        log_info "No configured servers, trying auto-detection from package.json..."
+        DETECTED_SERVERS="[]"
+        SCRIPTS=$(jq -r '.scripts | to_entries[] | "\(.key):\(.value)"' "$WORKTREE_PATH/package.json" 2>/dev/null || echo "")
+        
+        for script_name in "dev" "start:dev" "develop" "start"; do
+            if echo "$SCRIPTS" | grep -q "^$script_name:"; then
+                CMD=$(echo "$SCRIPTS" | grep "^$script_name:" | head -1 | cut -d: -f2-)
+                log_info "Auto-detected server: $script_name ($CMD)"
+                SERVER_OBJ=$(jq -n --arg name "$script_name" --arg cmd "npm run $script_name" '{name: $name, cmd: $cmd}')
+                DETECTED_SERVERS=$(echo "$DETECTED_SERVERS" | jq --argjson obj "$SERVER_OBJ" '. + [$obj]')
+                break
+            fi
+        done
+        
+        if [[ $(echo "$DETECTED_SERVERS" | jq 'length') -gt 0 ]]; then
+            DEV_SERVERS="$DETECTED_SERVERS"
+            SERVER_COUNT=$(echo "$DEV_SERVERS" | jq 'length')
+        fi
+    fi
+fi
+
+if [[ "$SERVER_COUNT" -eq 0 ]]; then
+    log_warn "No dev servers found (configured or auto-detected)."
+    exit 0
+fi
+
+log_info "Restarting servers for $SESSION_NAME ($REPO)..."
+
+# Target the 'servers' window
+if ! tmux list-windows -t "$SESSION_NAME" | grep -q "servers"; then
+    log_warn "'servers' window not found, creating it..."
+    tmux new-window -t "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH"
+fi
+
+# Non-destructive restart
+log_info "Restarting servers..."
+
+PANE_INDEX=0
+echo "$DEV_SERVERS" | jq -c '.[]' | while read -r server; do
+    SERVER_CMD=$(echo "$server" | jq -r '.cmd')
+    
+    # Target pane by index (0, 1, 2...)
+    TARGET_PANE="$SESSION_NAME:servers.$PANE_INDEX"
+    
+    # Check if pane exists
+    if ! tmux list-panes -t "$SESSION_NAME:servers" -F "#{pane_index}" | grep -q "^$PANE_INDEX$"; then
+        # Pane missing, split to create it
+        log_info "Creating missing pane for server: $(echo "$server" | jq -r '.name')"
+        tmux split-window -t "$SESSION_NAME:servers" -v -c "$WORKTREE_PATH"
+        tmux select-layout -t "$SESSION_NAME:servers" tiled
+    fi
+    
+    # Check if we are running INSIDE this pane to avoid killing ourselves
+    CURRENT_PANE_ID=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
+    TARGET_PANE_ID=$(tmux display-message -t "$TARGET_PANE" -p '#{pane_id}' 2>/dev/null || true)
+    
+    if [[ "$CURRENT_PANE_ID" == "$TARGET_PANE_ID" ]]; then
+        log_warn "Skipping restart of pane $PANE_INDEX because dev-start is running inside it."
+        log_info "Please run dev-start from a different window (e.g. 'term')."
+    else
+        # Send C-c, wait, clear, run
+        tmux send-keys -t "$TARGET_PANE" C-c
+        sleep 0.5
+        tmux send-keys -t "$TARGET_PANE" "clear" Enter
+        tmux send-keys -t "$TARGET_PANE" "$SERVER_CMD" Enter
+    fi
+    
+    PANE_INDEX=$((PANE_INDEX + 1))
+done
+
+log_success "Servers restarted!"

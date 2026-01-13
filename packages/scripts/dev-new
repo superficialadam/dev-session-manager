@@ -12,7 +12,8 @@ DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
 CONFIG_FILE="$DEV_DIR/config.json"
 REPOS_FILE="$DEV_DIR/repos.json"
 SESSIONS_DIR="$DEV_DIR/sessions"
-WORKTREES_DIR="$DEV_DIR/worktrees"
+CODE_DIR="$HOME/CODE"
+WORKTREES_DIR="$CODE_DIR/worktrees"
 
 # ttyd port range
 TTYD_PORT_MIN=7700
@@ -185,8 +186,91 @@ else
 fi
 log_success "Worktree created: $WORKTREE_PATH"
 
+# Install dependencies
+log_info "Installing dependencies..."
+if [[ -f "$WORKTREE_PATH/pnpm-lock.yaml" ]]; then
+    pnpm install -C "$WORKTREE_PATH"
+elif [[ -f "$WORKTREE_PATH/package-lock.json" ]]; then
+    npm install --prefix "$WORKTREE_PATH"
+elif [[ -f "$WORKTREE_PATH/yarn.lock" ]]; then
+    yarn --cwd "$WORKTREE_PATH" install
+elif [[ -f "$WORKTREE_PATH/package.json" ]]; then
+    # Default to pnpm if available, else npm
+    if command -v pnpm &> /dev/null; then
+        pnpm install -C "$WORKTREE_PATH"
+    else
+        npm install --prefix "$WORKTREE_PATH"
+    fi
+fi
+
+# Copy .env files from main repository
+log_info "Syncing .env files from main repository..."
+
+# REPO_PATH is now the main non-bare repo (e.g. ~/CODE/cos-capture)
+if [[ -d "$REPO_PATH" ]]; then
+    # Use rsync to copy only .env files, preserving directory structure
+    # --include='*/'       : visit all directories
+    # --include='**/.env*' : include .env, .env.local, .env.development, etc.
+    # --exclude='*'        : exclude everything else
+    # --prune-empty-dirs   : don't create empty directories
+    
+    if command -v rsync &> /dev/null; then
+        rsync -a --prune-empty-dirs \
+            --include='*/' --include='**/.env*' --exclude='*' \
+            --exclude='.git/' --exclude='node_modules/' \
+            "$REPO_PATH/" "$WORKTREE_PATH/"
+        
+        count=$(find "$WORKTREE_PATH" -name ".env*" | wc -l)
+        if [[ "$count" -gt 0 ]]; then
+            log_success "Synced $count .env file(s) from $REPO_PATH"
+        else
+            log_info "No .env files found in $REPO_PATH"
+        fi
+    else
+        log_warn "rsync not found, falling back to manual copy of root .env"
+        if [[ -f "$REPO_PATH/.env" ]]; then
+            cp "$REPO_PATH/.env" "$WORKTREE_PATH/.env"
+            log_success "Copied root .env"
+        fi
+    fi
+fi
+
 # Create session directory
 mkdir -p "$SESSION_DIR"
+
+# Auto-detect dev servers if none configured
+if [[ $(echo "$DEV_SERVERS" | jq 'length') -eq 0 ]] && [[ -f "$WORKTREE_PATH/package.json" ]]; then
+    log_info "No servers configured, scanning package.json..."
+    
+    DETECTED_SERVERS="[]"
+    
+    # Read scripts from package.json
+    SCRIPTS=$(jq -r '.scripts | to_entries[] | "\(.key):\(.value)"' "$WORKTREE_PATH/package.json" 2>/dev/null || echo "")
+    
+    # Priority list of script names to auto-run
+    for script_name in "dev" "start:dev" "develop" "start"; do
+        if echo "$SCRIPTS" | grep -q "^$script_name:"; then
+            CMD=$(echo "$SCRIPTS" | grep "^$script_name:" | head -1 | cut -d: -f2-)
+            log_info "Auto-detected server: $script_name ($CMD)"
+            
+            # Construct JSON object
+            SERVER_OBJ=$(jq -n \
+                --arg name "$script_name" \
+                --arg cmd "npm run $script_name" \
+                '{name: $name, cmd: $cmd}')
+            
+            DETECTED_SERVERS=$(echo "$DETECTED_SERVERS" | jq --argjson obj "$SERVER_OBJ" '. + [$obj]')
+            
+            # Only pick the first one we find (usually 'dev' is enough)
+            break
+        fi
+    done
+    
+    if [[ $(echo "$DETECTED_SERVERS" | jq 'length') -gt 0 ]]; then
+        DEV_SERVERS="$DETECTED_SERVERS"
+        START_SERVERS=true
+    fi
+fi
 
 # Find available ttyd port
 TTYD_PORT=""
@@ -238,7 +322,7 @@ if $START_TTYD && [[ -n "$TTYD_PORT" ]]; then
     log_info "Starting ttyd on port $TTYD_PORT..."
     
     # Start ttyd in background, attached to the agent window
-    nohup ttyd -p "$TTYD_PORT" -W tmux attach -t "$SESSION_NAME:agent" \
+    nohup ttyd -p "$TTYD_PORT" -i 0.0.0.0 -W tmux attach -t "$SESSION_NAME:agent" \
         > "$SESSION_DIR/ttyd.log" 2>&1 &
     TTYD_PID=$!
     

@@ -9,8 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULT_DEV_DIR="$HOME/.dev-sessions"
 DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
+CODE_DIR="$HOME/CODE"
 REPOS_FILE="$DEV_DIR/repos.json"
-REPOS_DIR="$DEV_DIR/repos"
+REPOS_DIR="$CODE_DIR"
 
 # Colors
 RED='\033[0;31m'
@@ -239,14 +240,15 @@ _add_repo() {
     local ssh_url
     ssh_url=$(gh repo view "$full_name" --json sshUrl -q '.sshUrl')
     
-    local repo_path="$REPOS_DIR/$short_name.git"
+    local repo_path="$REPOS_DIR/$short_name"
     
     if [[ -d "$repo_path" ]]; then
         log_warn "Directory exists, using existing: $repo_path"
     else
-        log_info "Cloning bare repository..."
-        gh repo clone "$full_name" "$repo_path" -- --bare
+        log_info "Cloning repository..."
+        gh repo clone "$full_name" "$repo_path"
         
+        # Configure fetch to get all branches (standard for non-bare too)
         git -C "$repo_path" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
         git -C "$repo_path" fetch origin
     fi

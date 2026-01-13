@@ -73,9 +73,12 @@ fi
 
 # Create runtime directory structure
 log_info "Creating runtime directories..."
-mkdir -p "$DEV_DIR"/{repos,worktrees,sessions}
+mkdir -p "$DEV_DIR"/sessions
+mkdir -p "$HOME/CODE"
+mkdir -p "$HOME/CODE/worktrees"
 mkdir -p "$HOME/.local/bin"
 log_success "Runtime directories ready at: $DEV_DIR"
+log_success "Repository and worktree directories ready at: $HOME/CODE"
 
 # Create default config
 if [[ ! -f "$DEV_DIR/config.json" ]]; then
