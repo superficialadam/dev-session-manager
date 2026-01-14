@@ -189,11 +189,11 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1
 fi
 
-log_info "Enabling mouse support..."
-tmux set-option -t "$SESSION_NAME" mouse on
-
 log_info "Creating servers window..."
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
+
+log_info "Enabling mouse support..."
+tmux set-option -t "$SESSION_NAME" mouse on
 
 # Start opencode server in background if restarting agent and opencode
 if $RESTART_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then

@@ -355,11 +355,11 @@ log_success "Session metadata created"
 # Create tmux session with 1 window (servers) with custom layout
 log_info "Creating tmux session..."
 
-# Enable mouse support
-tmux set-option -t "$SESSION_NAME" mouse on
-
 # Create servers window
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
+
+# Enable mouse support
+tmux set-option -t "$SESSION_NAME" mouse on
 
 # Start opencode server in background if requested
 if $START_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
