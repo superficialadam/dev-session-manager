@@ -19,6 +19,14 @@ WORKTREES_DIR="$CODE_DIR/worktrees"
 TTYD_PORT_MIN=7700
 TTYD_PORT_MAX=7799
 
+# opencode server port range
+OPENCODE_PORT_MIN=4100
+OPENCODE_PORT_MAX=4199
+
+# nvim server port range
+NVIM_PORT_MIN=6100
+NVIM_PORT_MAX=6199
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -57,13 +65,30 @@ EOF
 
 # Find next available port in range
 find_available_port() {
-    for port in $(seq $TTYD_PORT_MIN $TTYD_PORT_MAX); do
+    local min=$1
+    local max=$2
+    for port in $(seq $min $max); do
         if ! ss -tlnp | grep -q ":$port "; then
             echo "$port"
             return
         fi
     done
     echo ""
+}
+
+# Generate a deterministic port for a session name (hash-based)
+get_session_port() {
+    local session_name=$1
+    local min=$2
+    local max=$3
+    local range=$((max - min + 1))
+    
+    # Use md5sum to generate a hash, take first 8 hex chars, convert to decimal
+    local hash=$(echo -n "$session_name" | md5sum | cut -c1-8)
+    local hash_dec=$((16#$hash))
+    local port=$((min + (hash_dec % range)))
+    
+    echo "$port"
 }
 
 # Parse arguments
@@ -276,11 +301,36 @@ fi
 TTYD_PORT=""
 TTYD_PID=""
 if $START_TTYD; then
-    TTYD_PORT=$(find_available_port)
+    TTYD_PORT=$(find_available_port $TTYD_PORT_MIN $TTYD_PORT_MAX)
     if [[ -z "$TTYD_PORT" ]]; then
         log_warn "No available ttyd ports in range $TTYD_PORT_MIN-$TTYD_PORT_MAX"
         START_TTYD=false
     fi
+fi
+
+# Get deterministic opencode server port for this session
+OPENCODE_PORT=""
+if [[ "$AGENT" == "opencode" ]] && $START_AGENT; then
+    OPENCODE_PORT=$(get_session_port "$SESSION_NAME" $OPENCODE_PORT_MIN $OPENCODE_PORT_MAX)
+    # Check if port is in use, find next available if so
+    if ss -tlnp | grep -q ":$OPENCODE_PORT "; then
+        log_warn "Preferred opencode port $OPENCODE_PORT in use, finding alternative..."
+        OPENCODE_PORT=$(find_available_port $OPENCODE_PORT_MIN $OPENCODE_PORT_MAX)
+    fi
+    if [[ -z "$OPENCODE_PORT" ]]; then
+        log_warn "No available opencode ports in range $OPENCODE_PORT_MIN-$OPENCODE_PORT_MAX"
+    fi
+fi
+
+# Get deterministic nvim server port for this session
+NVIM_PORT=$(get_session_port "${SESSION_NAME}-nvim" $NVIM_PORT_MIN $NVIM_PORT_MAX)
+# Check if port is in use, find next available if so
+if ss -tlnp | grep -q ":$NVIM_PORT "; then
+    log_warn "Preferred nvim port $NVIM_PORT in use, finding alternative..."
+    NVIM_PORT=$(find_available_port $NVIM_PORT_MIN $NVIM_PORT_MAX)
+fi
+if [[ -z "$NVIM_PORT" ]]; then
+    log_warn "No available nvim ports in range $NVIM_PORT_MIN-$NVIM_PORT_MAX"
 fi
 
 # Create meta.json
@@ -293,6 +343,8 @@ cat > "$SESSION_DIR/meta.json" << EOF
   "agent": "$AGENT",
   "tmux_session": "$SESSION_NAME",
   "ttyd_port": ${TTYD_PORT:-null},
+  "opencode_port": ${OPENCODE_PORT:-null},
+  "nvim_port": ${NVIM_PORT:-null},
   "created_at": "$(date -Iseconds)",
   "status": "idle",
   "last_activity": "$(date -Iseconds)"
@@ -300,29 +352,43 @@ cat > "$SESSION_DIR/meta.json" << EOF
 EOF
 log_success "Session metadata created"
 
-# Create tmux session with 4 windows
+# Create tmux session with 1 window (servers) with custom layout
 log_info "Creating tmux session..."
 
-# Window 0: Agent
-tmux new-session -d -s "$SESSION_NAME" -n "agent" -c "$WORKTREE_PATH"
+# Enable mouse support
+tmux set-option -t "$SESSION_NAME" mouse on
 
-# Window 1: Servers
-tmux new-window -t "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH"
+# Create servers window
+tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH" bash -c 'eval "$(mise activate bash)" && exec bash'
 
-# Window 2: Neovim
-tmux new-window -t "$SESSION_NAME" -n "nvim" -c "$WORKTREE_PATH"
+# Start opencode server in background if requested
+if $START_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
+    tmux send-keys -t "$SESSION_NAME:servers" "opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
+    log_info "OpenCode server running on port $OPENCODE_PORT"
+fi
 
-# Window 3: Terminal
-tmux new-window -t "$SESSION_NAME" -n "term" -c "$WORKTREE_PATH"
+# Start nvim server in background if port available
+if [[ -n "$NVIM_PORT" ]]; then
+    tmux send-keys -t "$SESSION_NAME:servers" "nvim --headless --listen 0.0.0.0:$NVIM_PORT &" Enter
+    log_info "Neovim server running on port $NVIM_PORT"
+fi
 
-log_success "Tmux session created with 4 windows"
+# Create pane layout: vertical split, then left horizontally split
+tmux split-window -t "$SESSION_NAME:servers" -h  # vertical split: left .0, right .1
+tmux select-pane -t "$SESSION_NAME:servers.0"
+tmux split-window -t "$SESSION_NAME:servers" -v  # horizontal split left: top .0, bottom .2 (since .1 is right)
 
-# Start ttyd for this session (agent window)
+# Now panes: .0 (top-left), .2 (bottom-left), .1 (right)
+
+log_success "Tmux session created with servers window and 3-pane layout"
+
+# Start ttyd for this session (supports window switching via URL args)
 if $START_TTYD && [[ -n "$TTYD_PORT" ]]; then
     log_info "Starting ttyd on port $TTYD_PORT..."
     
-    # Start ttyd in background, attached to the agent window
-    nohup ttyd -p "$TTYD_PORT" -i 0.0.0.0 -W tmux attach -t "$SESSION_NAME:agent" \
+    # Start ttyd with -a flag to allow window selection via URL args
+    # URL format: http://host:port/?arg=<window>  (agent|servers|nvim|term)
+    nohup ttyd -p "$TTYD_PORT" -i 0.0.0.0 -W -a "$SCRIPT_DIR/ttyd-attach" "$SESSION_NAME" \
         > "$SESSION_DIR/ttyd.log" 2>&1 &
     TTYD_PID=$!
     
@@ -337,60 +403,51 @@ if $START_TTYD && [[ -n "$TTYD_PORT" ]]; then
     log_success "ttyd started (PID: $TTYD_PID, port: $TTYD_PORT)"
 fi
 
-# Start agent in window 0
-if $START_AGENT; then
-    log_info "Starting agent: $AGENT..."
-    case "$AGENT" in
-        opencode)
-            tmux send-keys -t "$SESSION_NAME:agent" "opencode" Enter
-            ;;
-        claude)
-            tmux send-keys -t "$SESSION_NAME:agent" "claude" Enter
-            ;;
-        *)
-            log_warn "Unknown agent: $AGENT, not starting"
-            ;;
-    esac
-fi
 
-# Start nvim in window 2
-log_info "Starting neovim..."
-tmux send-keys -t "$SESSION_NAME:nvim" "nvim ." Enter
 
-# Start dev servers in window 1
+# Start dev servers in the servers window panes
 if $START_SERVERS; then
     SERVER_COUNT=$(echo "$DEV_SERVERS" | jq 'length')
     if [[ "$SERVER_COUNT" -gt 0 ]]; then
         log_info "Starting $SERVER_COUNT dev server(s)..."
-        
-        FIRST=true
+
+        # Pane order: top-left (.0), bottom-left (.2), right (.1)
+        PANE_ORDER=(0 2 1)
+        i=0
         echo "$DEV_SERVERS" | jq -c '.[]' | while read -r server; do
+            if [[ $i -ge 3 ]]; then
+                log_warn "More than 3 servers, only starting first 3"
+                break
+            fi
             SERVER_NAME=$(echo "$server" | jq -r '.name')
             SERVER_CMD=$(echo "$server" | jq -r '.cmd')
-            
-            if $FIRST; then
-                tmux send-keys -t "$SESSION_NAME:servers" "$SERVER_CMD" Enter
-                FIRST=false
-            else
-                tmux split-window -t "$SESSION_NAME:servers" -v -c "$WORKTREE_PATH"
-                tmux send-keys -t "$SESSION_NAME:servers" "$SERVER_CMD" Enter
-            fi
+            PANE=${PANE_ORDER[$i]}
+
+            tmux select-pane -t "$SESSION_NAME:servers.$PANE"
+            tmux send-keys -t "$SESSION_NAME:servers" "$SERVER_CMD" Enter
+            i=$((i + 1))
         done
-        
+
         tmux select-layout -t "$SESSION_NAME:servers" tiled
     fi
 fi
 
-# Select agent window
-tmux select-window -t "$SESSION_NAME:agent"
+# Select servers window
+tmux select-window -t "$SESSION_NAME:servers"
 
 log_success "Session ready: $SESSION_NAME"
 echo ""
 echo "Commands:"
 echo "  dev-attach $SESSION_NAME          # attach in terminal"
 echo "  dev-send $SESSION_NAME \"prompt\"   # send prompt"
-if [[ -n "$TTYD_PORT" ]]; then
 echo ""
-echo "Web terminal:"
-echo "  http://localhost:$TTYD_PORT"
+echo "Web interfaces:"
+if [[ -n "$TTYD_PORT" ]]; then
+echo "  Terminal: http://localhost:$TTYD_PORT"
+fi
+if [[ -n "$OPENCODE_PORT" ]]; then
+echo "  OpenCode: http://localhost:$OPENCODE_PORT"
+fi
+if [[ -n "$NVIM_PORT" ]]; then
+echo "  Neovim: nvim --remote-ui --server localhost:$NVIM_PORT"
 fi

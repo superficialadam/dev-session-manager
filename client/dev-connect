@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# dev-connect: Connect to a development session on hetzner via mosh
+# Usage: dev-connect [session-name]
+
+if [[ $# -eq 0 ]]; then
+    echo "Available sessions:"
+    dev-list 2>/dev/null || echo "  (none)"
+    echo ""
+    echo -n "Enter session name: "
+    read SESSION
+    if [[ -z "$SESSION" ]]; then
+        echo "No session selected"
+        exit 1
+    fi
+else
+    SESSION=$1
+fi
+
+echo "Connecting to session: $SESSION"
+mosh hetzner "dev-attach $SESSION"

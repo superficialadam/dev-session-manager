@@ -20,6 +20,8 @@ export interface Session {
   tmux_session: string
   ttyd_port: number | null
   ttyd_pid: number | null
+  opencode_port: number | null
+  nvim_port: number | null
   created_at: string
   status: string
   last_activity: string
@@ -157,6 +159,20 @@ export async function getSessionHistory(sessionName: string): Promise<any[]> {
       .map(line => JSON.parse(line))
   } catch {
     return []
+  }
+}
+
+export async function restartSession(
+  name: string,
+  agent?: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const args = [name]
+    if (agent) args.push('--agent', agent)
+    await runScript('dev-restart', args)
+    return { success: true, message: 'Agent restarted' }
+  } catch (error: any) {
+    return { success: false, message: error.message }
   }
 }
 

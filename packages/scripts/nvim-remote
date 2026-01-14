@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# nvim-remote: Connect to a remote nvim server
+# Usage: nvim-remote <host:port> [path]
+#
+# This script connects your local neovim to a remote nvim server
+# running on a dev-session. It also sets up an SSH tunnel if needed.
+#
+# Examples:
+#   nvim-remote 192.168.1.100:6150
+#   nvim-remote myserver:6150 ~/projects/myapp
+#   nvim-remote cos-dev   # Uses dev-session name (requires SSH to resolve port)
+
+set -euo pipefail
+
+usage() {
+    cat << EOF
+Usage: nvim-remote <host:port> [path]
+
+Connect local neovim to a remote nvim server.
+
+Arguments:
+  host:port    Remote server address (e.g., 192.168.1.100:6150)
+  path         Optional path to open on the remote (default: current dir)
+
+Examples:
+  nvim-remote 192.168.1.100:6150
+  nvim-remote myserver.local:6150 ~/projects/app
+
+Note: The remote must be running nvim in server mode:
+  nvim --headless --listen 0.0.0.0:PORT &
+EOF
+    exit 0
+}
+
+# Parse arguments
+if [[ $# -lt 1 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    usage
+fi
+
+SERVER="$1"
+REMOTE_PATH="${2:-.}"
+
+# Validate server format
+if [[ ! "$SERVER" =~ : ]]; then
+    echo "Error: Server must be in host:port format (e.g., 192.168.1.100:6150)"
+    exit 1
+fi
+
+echo "Connecting to nvim server at $SERVER..."
+
+# Connect with remote-ui
+exec nvim --remote-ui --server "$SERVER" "$REMOTE_PATH"

@@ -58,6 +58,9 @@ get_agent_state() {
     # OpenCode TUI idle detection (version number or path at bottom)
     elif [[ "$last_line" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]; then
         echo "idle"
+    # OpenCode TUI command bar (ctrl+p commands, ctrl+t variants, etc.)
+    elif [[ "$last_line" =~ ctrl\+p\ commands ]]; then
+        echo "idle"
     # OpenCode "Ask anything" prompt visible
     elif echo "$content" | grep -q "Ask anything..."; then
         echo "idle"
@@ -66,10 +69,9 @@ get_agent_state() {
     elif [[ "$last_line" =~ (Error|error|failed|Failed) ]]; then
         echo "error"
     else
-        # Default to working only if we don't recognize idle state
-        # But for TUI apps, it's safer to maybe check for activity?
-        # For now, let's keep it as is but add the TUI checks above
-        echo "working"
+        # Default to idle if we don't recognize a working state
+        # This is safer for TUI apps where the idle state may vary
+        echo "idle"
     fi
 }
 

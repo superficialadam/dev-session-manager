@@ -5,6 +5,8 @@ import { HistoryPanel } from '@/components/history-panel'
 import { TerminalTabs } from '@/components/terminal-tabs'
 import { RefreshButton } from '@/components/refresh-button'
 import { DeleteSessionButton } from '@/components/delete-session-button'
+import { RestartSessionButton } from '@/components/restart-session-button'
+import { ConnectString } from '@/components/connect-string'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,6 +61,7 @@ export default async function SessionPage({ params }: Props) {
         </div>
         
         <div className="flex gap-2">
+          <RestartSessionButton sessionName={session.name} disabled={!session.tmux_exists} />
           <RefreshButton />
           <DeleteSessionButton sessionName={session.name} />
         </div>
@@ -73,6 +76,7 @@ export default async function SessionPage({ params }: Props) {
             <TerminalTabs 
               sessionName={session.name} 
               tmuxExists={session.tmux_exists}
+              ttydPort={session.ttyd_port}
             />
           </div>
           
@@ -118,6 +122,14 @@ export default async function SessionPage({ params }: Props) {
             </h2>
             <HistoryPanel history={history} />
           </div>
+
+          {/* Remote Connect */}
+          {(session.opencode_port || session.nvim_port) && (
+            <ConnectString 
+              opencodePort={session.opencode_port} 
+              nvimPort={session.nvim_port} 
+            />
+          )}
 
           {/* Terminal commands */}
           <div className="bg-surface-1 border border-neutral-800 rounded-xl p-4">

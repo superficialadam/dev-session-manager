@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# ttyd-attach: Helper script for ttyd to attach to specific tmux windows
+# Usage: ttyd-attach <session> [window]
+# 
+# This script is called by ttyd with -a flag, allowing URL args like:
+#   http://host:port/?arg=window_name
+
+SESSION="${1:-}"
+WINDOW="${2:-agent}"
+
+if [[ -z "$SESSION" ]]; then
+    echo "Error: Session name required"
+    exit 1
+fi
+
+# Validate window name (prevent injection)
+case "$WINDOW" in
+    agent|servers|nvim|term)
+        ;;
+    *)
+        WINDOW="agent"
+        ;;
+esac
+
+exec tmux attach -t "$SESSION:$WINDOW"

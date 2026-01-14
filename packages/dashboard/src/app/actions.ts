@@ -49,3 +49,13 @@ export async function addRepo(formData: FormData) {
   
   return result
 }
+
+export async function restartSession(name: string, agent?: string) {
+  const result = await sessions.restartSession(name, agent)
+  
+  if (result.success) {
+    revalidatePath(`/sessions/${name}`)
+  }
+  
+  return result
+}
