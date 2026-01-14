@@ -198,7 +198,7 @@ tmux set-option -t "$SESSION_NAME" mouse on
 # Always start opencode server when recreating session
 if [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
     log_info "Starting OpenCode server..."
-    tmux send-keys -t "$SESSION_NAME:servers" "opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
+    tmux send-keys -t "$SESSION_NAME:servers" "cd $WORKTREE && opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
