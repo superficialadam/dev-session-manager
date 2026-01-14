@@ -25,12 +25,15 @@ export function TerminalTabs({ sessionName, tmuxExists = true, ttydPort, opencod
       const hostname = window.location.hostname
       const baseUrl = `http://${hostname}:${opencodePort}`
       
-      // Fetch the current project ID from the opencode server to build the correct URL
+      // Fetch the current project path from the opencode server and base64 encode it for the URL
       fetch(`${baseUrl}/project/current`)
         .then(res => res.json())
         .then(project => {
-          if (project?.id) {
-            setOpencodeUrl(`${baseUrl}/${project.id}`)
+          // Use sandbox path if available, otherwise worktree
+          const projectPath = project?.sandboxes?.[0] || project?.worktree
+          if (projectPath) {
+            const encoded = btoa(projectPath)
+            setOpencodeUrl(`${baseUrl}/${encoded}`)
           } else {
             setOpencodeUrl(baseUrl)
           }
