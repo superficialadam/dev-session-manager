@@ -195,15 +195,15 @@ tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE" bash -c 'eval
 log_info "Enabling mouse support..."
 tmux set-option -t "$SESSION_NAME" mouse on
 
-# Start opencode server in background if restarting agent and opencode
-if $RESTART_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
+# Always start opencode server when recreating session
+if [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
     log_info "Starting OpenCode server..."
     tmux send-keys -t "$SESSION_NAME:servers" "opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
-# Start nvim server in background if restarting nvim
-if $RESTART_NVIM && [[ -n "$NVIM_PORT" ]]; then
+# Always start nvim server when recreating session
+if [[ -n "$NVIM_PORT" ]]; then
     log_info "Starting Neovim server..."
     tmux send-keys -t "$SESSION_NAME:servers" "nvim --headless --listen 0.0.0.0:$NVIM_PORT &" Enter
     log_info "Neovim server running on port $NVIM_PORT"
