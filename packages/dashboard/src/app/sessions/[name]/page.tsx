@@ -77,6 +77,7 @@ export default async function SessionPage({ params }: Props) {
               sessionName={session.name} 
               tmuxExists={session.tmux_exists}
               ttydPort={session.ttyd_port}
+              opencodePort={session.opencode_port}
             />
           </div>
           
