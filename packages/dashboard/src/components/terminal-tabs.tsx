@@ -21,16 +21,32 @@ export function TerminalTabs({ sessionName, tmuxExists = true, ttydPort, opencod
   const [opencodeUrl, setOpencodeUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && opencodePort) {
       const hostname = window.location.hostname
-      if (ttydPort) {
-        setTtydUrl(`http://${hostname}:${ttydPort}`)
-      }
-      if (opencodePort) {
-        setOpencodeUrl(`http://${hostname}:${opencodePort}`)
-      }
+      const baseUrl = `http://${hostname}:${opencodePort}`
+      
+      // Fetch the current project ID from the opencode server to build the correct URL
+      fetch(`${baseUrl}/project/current`)
+        .then(res => res.json())
+        .then(project => {
+          if (project?.id) {
+            setOpencodeUrl(`${baseUrl}/${project.id}`)
+          } else {
+            setOpencodeUrl(baseUrl)
+          }
+        })
+        .catch(() => {
+          setOpencodeUrl(baseUrl)
+        })
     }
-  }, [ttydPort, opencodePort])
+  }, [opencodePort])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && ttydPort) {
+      const hostname = window.location.hostname
+      setTtydUrl(`http://${hostname}:${ttydPort}`)
+    }
+  }, [ttydPort])
 
   const handleTabClick = (tabId: string) => {
     setActive(tabId)
