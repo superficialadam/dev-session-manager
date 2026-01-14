@@ -36,13 +36,27 @@ EOF
 
 get_agent_state() {
     local session="$1"
+    local meta_file="$SESSIONS_DIR/$session/meta.json"
     
-    # Capture last 20 lines of agent pane
+    # Read opencode port from meta
+    local opencode_port
+    opencode_port=$(jq -r '.opencode_port // empty' "$meta_file" 2>/dev/null)
+    
+    # Check if opencode server process is running on that port
+    if [[ -n "$opencode_port" && "$opencode_port" != "null" ]]; then
+        if ss -tlnp 2>/dev/null | grep -q ":$opencode_port "; then
+            echo "idle"
+            return
+        fi
+    fi
+    
+    # Fallback: try to capture from agent window (legacy sessions)
     local content
     content=$(tmux capture-pane -t "$session:agent" -p -S -20 2>/dev/null || echo "")
     
     if [[ -z "$content" ]]; then
-        echo "unknown"
+        # No agent window and no opencode server running
+        echo "stopped"
         return
     fi
     
