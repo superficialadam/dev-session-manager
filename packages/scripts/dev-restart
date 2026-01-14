@@ -180,34 +180,42 @@ fi
 
 # Recreate the tmux session with new layout
 log_info "Recreating tmux session with new layout..."
+log_info "Session name: $SESSION_NAME"
+log_info "Worktree: $WORKTREE"
 
-# Kill existing session
-tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1 || true
+# Kill existing session if it exists
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log_info "Killing existing session..."
+    tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1
+fi
 
-# Enable mouse support
+log_info "Enabling mouse support..."
 tmux set-option -t "$SESSION_NAME" mouse on
 
-# Create servers window
+log_info "Creating servers window..."
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
 
 # Start opencode server in background if restarting agent and opencode
 if $RESTART_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
+    log_info "Starting OpenCode server..."
     tmux send-keys -t "$SESSION_NAME:servers" "opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
 # Start nvim server in background if restarting nvim
 if $RESTART_NVIM && [[ -n "$NVIM_PORT" ]]; then
+    log_info "Starting Neovim server..."
     tmux send-keys -t "$SESSION_NAME:servers" "nvim --headless --listen 0.0.0.0:$NVIM_PORT &" Enter
     log_info "Neovim server running on port $NVIM_PORT"
 fi
 
-# Create pane layout: vertical split, then left horizontally split
+log_info "Creating pane layout..."
 tmux split-window -t "$SESSION_NAME:servers" -h  # vertical split: left .0, right .1
 tmux select-pane -t "$SESSION_NAME:servers.0"
 tmux split-window -t "$SESSION_NAME:servers" -v  # horizontal split left: top .0, bottom .2 (since .1 is right)
+tmux select-layout -t "$SESSION_NAME:servers" tiled
 
-# Select servers window
+log_info "Selecting servers window..."
 tmux select-window -t "$SESSION_NAME:servers"
 
 # Update agent in meta if changed
