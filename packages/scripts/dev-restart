@@ -135,6 +135,13 @@ CURRENT_AGENT=$(jq -r '.agent' "$META_FILE")
 AGENT="${NEW_AGENT:-$CURRENT_AGENT}"
 WORKTREE=$(jq -r '.worktree' "$META_FILE")
 
+# Check worktree exists
+if [[ ! -d "$WORKTREE" ]]; then
+    log_error "Worktree directory not found: $WORKTREE"
+    log_info "The session worktree may have been deleted. Delete the session metadata with dev-delete $SESSION_NAME"
+    exit 1
+fi
+
 # Get/update opencode port if needed
 if [[ "$AGENT" == "opencode" ]]; then
     OPENCODE_PORT=$(jq -r '.opencode_port // empty' "$META_FILE")
@@ -175,7 +182,7 @@ fi
 log_info "Recreating tmux session with new layout..."
 
 # Kill existing session
-tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1 || true
 
 # Enable mouse support
 tmux set-option -t "$SESSION_NAME" mouse on
