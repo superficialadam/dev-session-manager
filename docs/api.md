@@ -18,7 +18,7 @@ No authentication required for local development.
 
 ### List Sessions
 
-Retrieve a list of all active development sessions.
+Retrieve a list of all active development sessions with full details.
 
 - **URL:** `/sessions`
 - **Method:** `GET`
@@ -28,8 +28,23 @@ Retrieve a list of all active development sessions.
     ```json
     {
       "sessions": [
-        "session-name-1",
-        "session-name-2"
+        {
+          "name": "feature-auth",
+          "repo": "my-project",
+          "branch": "feature/auth",
+          "worktree": "/home/user/CODE/worktrees/feature-auth",
+          "agent": "opencode",
+          "tmux_session": "feature-auth",
+          "ttyd_port": 7700,
+          "opencode_port": 4100,
+          "nvim_port": 6100,
+          "created_at": "2024-01-15T10:30:00Z",
+          "status": "idle",
+          "last_activity": "2024-01-15T12:00:00Z",
+          "tmux_exists": true,
+          "attached": false,
+          "agent_state": "idle"
+        }
       ]
     }
     ```

@@ -6,8 +6,8 @@ const execAsync = promisify(exec);
 
 export async function GET() {
   try {
-    const { stdout } = await execAsync('dev-list 2>/dev/null || echo "(none)"');
-    const sessions = stdout.trim().split('\n').filter(line => line.trim() && !line.includes('(none)')).map(line => line.trim());
+    const { stdout } = await execAsync('dev-list --json 2>/dev/null || echo "[]"');
+    const sessions = JSON.parse(stdout.trim() || '[]');
     return NextResponse.json({ sessions });
   } catch (error) {
     console.error('Error listing sessions:', error);
