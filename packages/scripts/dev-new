@@ -211,6 +211,14 @@ else
 fi
 log_success "Worktree created: $WORKTREE_PATH"
 
+# Push branch to remote and set upstream tracking
+log_info "Setting up remote tracking..."
+git -C "$WORKTREE_PATH" push -u origin "$BRANCH" 2>/dev/null || {
+    # If push fails (e.g., branch already exists on remote), just set tracking
+    git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH" "$BRANCH" 2>/dev/null || true
+}
+log_success "Branch tracking: origin/$BRANCH"
+
 # Install dependencies
 log_info "Installing dependencies..."
 if [[ -f "$WORKTREE_PATH/pnpm-lock.yaml" ]]; then
