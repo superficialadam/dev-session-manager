@@ -194,6 +194,9 @@ tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE" bash -c 'eval
 
 log_info "Enabling mouse support..."
 tmux set-option -t "$SESSION_NAME" mouse on
+tmux set-option -t "$SESSION_NAME" set-clipboard on
+tmux set-option -t "$SESSION_NAME" terminal-features 'xterm*:clipboard:ccolour:cstyle:focus:title'
+tmux set-option -t "$SESSION_NAME" -g terminal-overrides 'xterm*:smcup@:rmcup@'
 
 # Always start opencode server when recreating session
 if [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then

@@ -366,8 +366,11 @@ log_info "Creating tmux session..."
 # Create servers window
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
 
-# Enable mouse support
+# Enable mouse support with proper terminal settings to avoid mouse tracking corruption
 tmux set-option -t "$SESSION_NAME" mouse on
+tmux set-option -t "$SESSION_NAME" set-clipboard on
+tmux set-option -t "$SESSION_NAME" terminal-features 'xterm*:clipboard:ccolour:cstyle:focus:title'
+tmux set-option -t "$SESSION_NAME" -g terminal-overrides 'xterm*:smcup@:rmcup@'
 
 # Start opencode server in background if requested
 if $START_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
