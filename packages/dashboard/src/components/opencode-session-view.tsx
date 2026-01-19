@@ -47,14 +47,27 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [isUserScrolled, setIsUserScrolled] = useState(false)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const prevMessageCountRef = useRef(0)
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  const scrollToBottom = useCallback((force = false) => {
+    if (force || !isUserScrolled) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [isUserScrolled])
+
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current
+    if (!container) return
+    
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+    setIsUserScrolled(!isAtBottom)
   }, [])
 
   const fetchSessions = useCallback(async () => {
@@ -84,7 +97,11 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       const data = await getOpencodeMessages(opencodePort, selectedSessionId)
       const nonEmptyMessages = data.filter(hasContent)
       setMessages(nonEmptyMessages)
-      setTimeout(scrollToBottom, 100)
+      
+      if (nonEmptyMessages.length > prevMessageCountRef.current) {
+        prevMessageCountRef.current = nonEmptyMessages.length
+        scrollToBottom()
+      }
     } catch (err) {
       console.error('Failed to fetch messages:', err)
     }
@@ -98,7 +115,8 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       const data = await getOpencodeMessages(opencodePort, selectedSessionId)
       const nonEmptyMessages = data.filter(hasContent)
       setMessages(nonEmptyMessages)
-      setTimeout(scrollToBottom, 100)
+      prevMessageCountRef.current = nonEmptyMessages.length
+      setTimeout(() => scrollToBottom(true), 100)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch messages')
     } finally {
@@ -112,6 +130,8 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
 
   useEffect(() => {
     if (selectedSessionId) {
+      prevMessageCountRef.current = 0
+      setIsUserScrolled(false)
       fetchMessagesInitial()
     }
   }, [selectedSessionId, fetchMessagesInitial])
@@ -121,7 +141,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       pollIntervalRef.current = setInterval(() => {
         fetchMessages()
         getOpencodeSessionStatuses(opencodePort).then(setSessionStatuses).catch(() => {})
-      }, 3000)
+      }, 2000)
     }
     return () => {
       if (pollIntervalRef.current) {
@@ -163,9 +183,11 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     }
     
     setMessages(prev => [...prev, userMessage])
+    prevMessageCountRef.current += 1
     setPrompt('')
     setIsSending(true)
-    setTimeout(scrollToBottom, 50)
+    setIsUserScrolled(false)
+    setTimeout(() => scrollToBottom(true), 50)
     
     try {
       await sendOpencodePromptAsync(opencodePort, selectedSessionId, prompt)
@@ -186,6 +208,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
 
   const selectedSession = sessions.find(s => s.id === selectedSessionId)
   const selectedStatus = selectedSessionId ? sessionStatuses[selectedSessionId] : null
+  const isAgentWorking = selectedStatus?.running === true
 
   return (
     <div className="flex flex-col h-[calc(100vh-120px)] -mx-6 -mt-8 md:mx-0 md:mt-0 md:h-[calc(100vh-180px)]">
@@ -207,7 +230,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
           >
             <div className="flex items-center gap-2 min-w-0">
               {selectedStatus && (
-                <div className={`w-2 h-2 rounded-full shrink-0 ${selectedStatus.running ? statusColors.running : statusColors.idle}`} />
+                <div className={`w-2 h-2 rounded-full shrink-0 ${selectedStatus.running ? statusColors.running : statusColors.idle} ${selectedStatus.running ? 'animate-pulse' : ''}`} />
               )}
               <span className="truncate">
                 {selectedSession?.title || selectedSession?.id || 'Select session'}
@@ -234,7 +257,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
                     }`}
                   >
                     {status && (
-                      <div className={`w-2 h-2 rounded-full shrink-0 ${status.running ? statusColors.running : statusColors.idle}`} />
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${status.running ? statusColors.running : statusColors.idle} ${status.running ? 'animate-pulse' : ''}`} />
                     )}
                     <span className="truncate">{session.title || session.id}</span>
                   </button>
@@ -256,7 +279,11 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-surface-0">
+      <main 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto p-4 space-y-4 bg-surface-0"
+      >
         {isLoadingMessages && messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <svg className="w-8 h-8 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
@@ -286,6 +313,18 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
           </div>
         )}
       </main>
+
+      {isAgentWorking && (
+        <div className="shrink-0 px-4 py-2 bg-surface-1 border-t border-neutral-800">
+          <div className="flex items-center gap-2 text-sm text-status-working">
+            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+            <span>Agent is working...</span>
+          </div>
+        </div>
+      )}
 
       <footer className="shrink-0 border-t border-neutral-800 bg-surface-1 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <div className="flex gap-2">

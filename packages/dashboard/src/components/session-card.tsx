@@ -3,7 +3,7 @@
 import { Session } from '@/lib/sessions'
 import { deleteSession } from '@/app/actions'
 import { useRouter } from 'next/navigation'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
 const statusColors = {
   idle: 'bg-status-idle',
@@ -16,15 +16,6 @@ const statusColors = {
 export function SessionCard({ session }: { session: Session }) {
   const router = useRouter()
   const [isDeleting, setIsDeleting] = useState(false)
-  const [opencodeUrl, setOpencodeUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && session.opencode_port && session.worktree) {
-      const hostname = window.location.hostname
-      const encoded = btoa(session.worktree)
-      setOpencodeUrl(`http://${hostname}:${session.opencode_port}/${encoded}`)
-    }
-  }, [session.opencode_port, session.worktree])
   
   const handleDelete = async (e: React.MouseEvent) => {
     e.preventDefault()
@@ -67,22 +58,6 @@ export function SessionCard({ session }: { session: Session }) {
         </a>
       ) : (
         <span className="text-sm text-neutral-600">—</span>
-      )}
-
-      {opencodeUrl && (
-        <a
-          href={opencodeUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className="flex items-center gap-1.5 text-sm text-neutral-400 hover:text-accent transition-colors"
-          title="Open OpenCode Web UI"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-          </svg>
-          <span className="hidden sm:inline">Web</span>
-        </a>
       )}
       
       <button
