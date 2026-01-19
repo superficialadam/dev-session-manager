@@ -47,28 +47,16 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
-  const [isUserScrolled, setIsUserScrolled] = useState(false)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const prevMessageCountRef = useRef(0)
   const prevMessageIdsRef = useRef('')
 
-  const scrollToBottom = useCallback((force = false) => {
-    if (force || !isUserScrolled) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [isUserScrolled])
-
-  const handleScroll = useCallback(() => {
-    const container = messagesContainerRef.current
-    if (!container) return
-    
-    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
-    setIsUserScrolled(!isAtBottom)
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
   const fetchSessions = useCallback(async () => {
@@ -101,19 +89,14 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       const newIds = nonEmptyMessages.map(m => m.info.id).join(',')
       
       if (newIds !== prevMessageIdsRef.current) {
-        const hadNewMessages = nonEmptyMessages.length > prevMessageCountRef.current
         prevMessageCountRef.current = nonEmptyMessages.length
         prevMessageIdsRef.current = newIds
         setMessages(nonEmptyMessages)
-        
-        if (hadNewMessages) {
-          scrollToBottom()
-        }
       }
     } catch (err) {
       console.error('Failed to fetch messages:', err)
     }
-  }, [opencodePort, selectedSessionId, scrollToBottom])
+  }, [opencodePort, selectedSessionId])
 
   const fetchMessagesInitial = useCallback(async () => {
     if (!selectedSessionId) return
@@ -125,7 +108,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       setMessages(nonEmptyMessages)
       prevMessageCountRef.current = nonEmptyMessages.length
       prevMessageIdsRef.current = nonEmptyMessages.map(m => m.info.id).join(',')
-      setTimeout(() => scrollToBottom(true), 100)
+      setTimeout(() => scrollToBottom(), 100)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch messages')
     } finally {
@@ -141,7 +124,6 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     if (selectedSessionId) {
       prevMessageCountRef.current = 0
       prevMessageIdsRef.current = ''
-      setIsUserScrolled(false)
       fetchMessagesInitial()
     }
   }, [selectedSessionId, fetchMessagesInitial])
@@ -196,8 +178,6 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     prevMessageCountRef.current += 1
     setPrompt('')
     setIsSending(true)
-    setIsUserScrolled(false)
-    setTimeout(() => scrollToBottom(true), 50)
     
     try {
       await sendOpencodePromptAsync(opencodePort, selectedSessionId, prompt)
@@ -289,11 +269,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
         </button>
       </header>
 
-      <main 
-        ref={messagesContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-4 bg-surface-0"
-      >
+      <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-surface-0">
         {isLoadingMessages && messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <svg className="w-8 h-8 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
