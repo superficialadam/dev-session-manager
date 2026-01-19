@@ -55,6 +55,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
   const dropdownRef = useRef<HTMLDivElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const prevMessageCountRef = useRef(0)
+  const prevMessageIdsRef = useRef('')
 
   const scrollToBottom = useCallback((force = false) => {
     if (force || !isUserScrolled) {
@@ -96,11 +97,18 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     try {
       const data = await getOpencodeMessages(opencodePort, selectedSessionId)
       const nonEmptyMessages = data.filter(hasContent)
-      setMessages(nonEmptyMessages)
       
-      if (nonEmptyMessages.length > prevMessageCountRef.current) {
+      const newIds = nonEmptyMessages.map(m => m.info.id).join(',')
+      
+      if (newIds !== prevMessageIdsRef.current) {
+        const hadNewMessages = nonEmptyMessages.length > prevMessageCountRef.current
         prevMessageCountRef.current = nonEmptyMessages.length
-        scrollToBottom()
+        prevMessageIdsRef.current = newIds
+        setMessages(nonEmptyMessages)
+        
+        if (hadNewMessages) {
+          scrollToBottom()
+        }
       }
     } catch (err) {
       console.error('Failed to fetch messages:', err)
@@ -116,6 +124,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       const nonEmptyMessages = data.filter(hasContent)
       setMessages(nonEmptyMessages)
       prevMessageCountRef.current = nonEmptyMessages.length
+      prevMessageIdsRef.current = nonEmptyMessages.map(m => m.info.id).join(',')
       setTimeout(() => scrollToBottom(true), 100)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch messages')
@@ -131,6 +140,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
   useEffect(() => {
     if (selectedSessionId) {
       prevMessageCountRef.current = 0
+      prevMessageIdsRef.current = ''
       setIsUserScrolled(false)
       fetchMessagesInitial()
     }
