@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-notify: Start/stop the notification services (ntfy server + agent monitor)
+# Usage: dev-notify start|stop|status
+
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+DEV_DIR="${DEV_DIR:-$HOME/.dev-sessions}"
+
+NTFY_PORT=8090
+NTFY_PID_FILE="$DEV_DIR/ntfy.pid"
+MONITOR_PID_FILE="$DEV_DIR/agent-monitor.pid"
+NTFY_LOG="$DEV_DIR/ntfy.log"
+MONITOR_LOG="$DEV_DIR/agent-monitor.log"
+
+# Get tailscale IP for base URL
+get_tailscale_ip() {
+    tailscale ip -4 2>/dev/null || echo "localhost"
+}
+
+start_ntfy() {
+    if [[ -f "$NTFY_PID_FILE" ]] && kill -0 "$(cat "$NTFY_PID_FILE")" 2>/dev/null; then
+        echo "ntfy already running (PID $(cat "$NTFY_PID_FILE"))"
+        return 0
+    fi
+    
+    local ts_ip=$(get_tailscale_ip)
+    
+    # Create config if needed
+    sudo mkdir -p /etc/ntfy
+    sudo tee /etc/ntfy/server.yml > /dev/null << EOF
+base-url: "http://${ts_ip}:${NTFY_PORT}"
+listen-http: ":${NTFY_PORT}"
+cache-file: "/var/cache/ntfy/cache.db"
+behind-proxy: false
+EOF
+    
+    sudo mkdir -p /var/cache/ntfy
+    sudo chown "$(whoami)" /var/cache/ntfy
+    
+    nohup ntfy serve --config /etc/ntfy/server.yml > "$NTFY_LOG" 2>&1 &
+    echo $! > "$NTFY_PID_FILE"
+    echo "ntfy started on port $NTFY_PORT (PID $!)"
+}
+
+start_monitor() {
+    if [[ -f "$MONITOR_PID_FILE" ]] && kill -0 "$(cat "$MONITOR_PID_FILE")" 2>/dev/null; then
+        echo "agent-monitor already running (PID $(cat "$MONITOR_PID_FILE"))"
+        return 0
+    fi
+    
+    local ts_ip=$(get_tailscale_ip)
+    
+    DASHBOARD_URL="http://${ts_ip}:3333" \
+    NTFY_SERVER="http://localhost:${NTFY_PORT}" \
+    NTFY_TOPIC="dev-sessions" \
+    nohup node "$SCRIPT_DIR/agent-monitor.js" > "$MONITOR_LOG" 2>&1 &
+    
+    echo $! > "$MONITOR_PID_FILE"
+    echo "agent-monitor started (PID $!)"
+}
+
+stop_service() {
+    local pid_file="$1"
+    local name="$2"
+    
+    if [[ -f "$pid_file" ]]; then
+        local pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            echo "$name stopped (was PID $pid)"
+        else
+            echo "$name not running"
+        fi
+        rm -f "$pid_file"
+    else
+        echo "$name not running"
+    fi
+}
+
+status() {
+    echo "=== Notification Services ==="
+    
+    if [[ -f "$NTFY_PID_FILE" ]] && kill -0 "$(cat "$NTFY_PID_FILE")" 2>/dev/null; then
+        echo "ntfy: running (PID $(cat "$NTFY_PID_FILE")) on port $NTFY_PORT"
+    else
+        echo "ntfy: stopped"
+    fi
+    
+    if [[ -f "$MONITOR_PID_FILE" ]] && kill -0 "$(cat "$MONITOR_PID_FILE")" 2>/dev/null; then
+        echo "agent-monitor: running (PID $(cat "$MONITOR_PID_FILE"))"
+    else
+        echo "agent-monitor: stopped"
+    fi
+}
+
+case "${1:-status}" in
+    start)
+        start_ntfy
+        sleep 1
+        start_monitor
+        ;;
+    stop)
+        stop_service "$MONITOR_PID_FILE" "agent-monitor"
+        stop_service "$NTFY_PID_FILE" "ntfy"
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: dev-notify start|stop|restart|status"
+        exit 1
+        ;;
+esac
