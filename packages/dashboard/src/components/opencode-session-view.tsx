@@ -22,6 +22,9 @@ const statusColors: Record<string, string> = {
   idle: 'bg-status-idle',
 }
 
+const INITIAL_MESSAGE_LIMIT = 10
+const LOAD_MORE_COUNT = 20
+
 function isSubagentSession(session: OpencodeSession): boolean {
   return session.parentID !== undefined && session.parentID !== null
 }
@@ -41,22 +44,27 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, OpencodeSessionStatus>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<OpencodeMessageWithParts[]>([])
+  const [allMessages, setAllMessages] = useState<OpencodeMessageWithParts[]>([])
+  const [displayCount, setDisplayCount] = useState(INITIAL_MESSAGE_LIMIT)
   const [prompt, setPrompt] = useState('')
   const [isLoadingSessions, setIsLoadingSessions] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [hasMoreMessages, setHasMoreMessages] = useState(false)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const prevMessageCountRef = useRef(0)
   const prevMessageIdsRef = useRef('')
+  const isInitialLoadRef = useRef(true)
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior })
   }, [])
 
   const fetchSessions = useCallback(async () => {
@@ -89,26 +97,42 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       const newIds = nonEmptyMessages.map(m => m.info.id).join(',')
       
       if (newIds !== prevMessageIdsRef.current) {
-        prevMessageCountRef.current = nonEmptyMessages.length
         prevMessageIdsRef.current = newIds
-        setMessages(nonEmptyMessages)
+        setAllMessages(nonEmptyMessages)
+        
+        // Show last N messages, keeping displayCount in sync
+        const displayMessages = nonEmptyMessages.slice(-displayCount)
+        setMessages(displayMessages)
+        setHasMoreMessages(nonEmptyMessages.length > displayCount)
       }
     } catch (err) {
       console.error('Failed to fetch messages:', err)
     }
-  }, [opencodePort, selectedSessionId])
+  }, [opencodePort, selectedSessionId, displayCount])
 
   const fetchMessagesInitial = useCallback(async () => {
     if (!selectedSessionId) return
     setIsLoadingMessages(true)
     setError(null)
+    isInitialLoadRef.current = true
     try {
       const data = await getOpencodeMessages(opencodePort, selectedSessionId)
       const nonEmptyMessages = data.filter(hasContent)
-      setMessages(nonEmptyMessages)
-      prevMessageCountRef.current = nonEmptyMessages.length
+      
+      setAllMessages(nonEmptyMessages)
       prevMessageIdsRef.current = nonEmptyMessages.map(m => m.info.id).join(',')
-      setTimeout(() => scrollToBottom(), 100)
+      
+      // Show only the last INITIAL_MESSAGE_LIMIT messages
+      const initialDisplay = Math.min(INITIAL_MESSAGE_LIMIT, nonEmptyMessages.length)
+      setDisplayCount(initialDisplay)
+      setMessages(nonEmptyMessages.slice(-initialDisplay))
+      setHasMoreMessages(nonEmptyMessages.length > initialDisplay)
+      
+      // Scroll to bottom after render
+      setTimeout(() => {
+        scrollToBottom('instant')
+        isInitialLoadRef.current = false
+      }, 50)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch messages')
     } finally {
@@ -116,14 +140,36 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     }
   }, [opencodePort, selectedSessionId, scrollToBottom])
 
+  const loadMoreMessages = useCallback(() => {
+    if (!hasMoreMessages || isLoadingMore) return
+    
+    setIsLoadingMore(true)
+    const container = messagesContainerRef.current
+    const scrollHeightBefore = container?.scrollHeight || 0
+    
+    const newDisplayCount = Math.min(displayCount + LOAD_MORE_COUNT, allMessages.length)
+    setDisplayCount(newDisplayCount)
+    setMessages(allMessages.slice(-newDisplayCount))
+    setHasMoreMessages(allMessages.length > newDisplayCount)
+    
+    // Maintain scroll position after loading more
+    setTimeout(() => {
+      if (container) {
+        const scrollHeightAfter = container.scrollHeight
+        container.scrollTop = scrollHeightAfter - scrollHeightBefore
+      }
+      setIsLoadingMore(false)
+    }, 10)
+  }, [hasMoreMessages, isLoadingMore, displayCount, allMessages])
+
   useEffect(() => {
     fetchSessions()
   }, [fetchSessions])
 
   useEffect(() => {
     if (selectedSessionId) {
-      prevMessageCountRef.current = 0
       prevMessageIdsRef.current = ''
+      setDisplayCount(INITIAL_MESSAGE_LIMIT)
       fetchMessagesInitial()
     }
   }, [selectedSessionId, fetchMessagesInitial])
@@ -175,7 +221,7 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     }
     
     setMessages(prev => [...prev, userMessage])
-    prevMessageCountRef.current += 1
+    setAllMessages(prev => [...prev, userMessage])
     setPrompt('')
     setIsSending(true)
     
@@ -269,7 +315,29 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-surface-0">
+      <main ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-surface-0">
+        {hasMoreMessages && (
+          <div className="flex justify-center">
+            <button
+              onClick={loadMoreMessages}
+              disabled={isLoadingMore}
+              className="px-4 py-2 text-sm text-neutral-400 hover:text-white hover:bg-surface-2 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {isLoadingMore ? (
+                <span className="flex items-center gap-2">
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Loading...
+                </span>
+              ) : (
+                `Load ${Math.min(LOAD_MORE_COUNT, allMessages.length - displayCount)} older messages`
+              )}
+            </button>
+          </div>
+        )}
+        
         {isLoadingMessages && messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <svg className="w-8 h-8 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
