@@ -3,27 +3,19 @@
 /**
  * Agent Monitor Service
  * 
- * Monitors all OpenCode sessions for status changes and sends
- * ntfy notifications when agents finish working.
- * 
- * Usage: node agent-monitor.js
- * 
- * Environment variables:
- *   NTFY_SERVER - ntfy server URL (default: http://localhost:8090)
- *   NTFY_TOPIC - ntfy topic (default: dev-sessions)
- *   DASHBOARD_URL - dashboard URL for click links (default: http://100.119.128.1:3333)
- *   POLL_INTERVAL - polling interval in ms (default: 5000)
+ * Polls OpenCode session status and sends ntfy notifications
+ * when agents finish working.
  */
 
-const { execSync } = require('child_process')
+const { execSync, spawn } = require('child_process')
 
 const NTFY_SERVER = process.env.NTFY_SERVER || 'http://localhost:8090'
 const NTFY_TOPIC = process.env.NTFY_TOPIC || 'dev-sessions'
 const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://100.119.128.1:3333'
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || '5000', 10)
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || '3000', 10)
 
-// Track previous states: { sessionName: { port, wasRunning } }
-const sessionStates = new Map()
+// Track busy state per dev-session: { sessionName: boolean }
+const busyStates = new Map()
 
 async function sendNotification(title, message, tags, click) {
   try {
@@ -51,19 +43,7 @@ async function sendNotification(title, message, tags, click) {
   }
 }
 
-async function getSessionStatus(port) {
-  try {
-    const response = await fetch(`http://localhost:${port}/session/status`, {
-      signal: AbortSignal.timeout(3000),
-    })
-    if (!response.ok) return null
-    return await response.json()
-  } catch {
-    return null
-  }
-}
-
-async function getSessions() {
+function getSessions() {
   try {
     const output = execSync('dev-list --json 2>/dev/null', { encoding: 'utf-8' })
     return JSON.parse(output)
@@ -72,39 +52,51 @@ async function getSessions() {
   }
 }
 
+async function getSessionBusy(port) {
+  try {
+    const response = await fetch(`http://localhost:${port}/session/status`, {
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!response.ok) return null
+    const statuses = await response.json()
+    
+    // Check if ANY session is busy
+    for (const [id, status] of Object.entries(statuses)) {
+      if (status.type === 'busy') {
+        return true
+      }
+    }
+    return false
+  } catch {
+    return null
+  }
+}
+
 async function checkSessions() {
-  const sessions = await getSessions()
+  const sessions = getSessions()
   
   for (const session of sessions) {
     if (!session.opencode_port || !session.tmux_exists) continue
     
-    const statuses = await getSessionStatus(session.opencode_port)
-    if (!statuses) continue
+    const isBusy = await getSessionBusy(session.opencode_port)
+    if (isBusy === null) continue // Skip if can't connect
     
-    // Check each OpenCode session's status
-    // API returns { type: "busy" } when running, { type: "idle" } or {} when idle
-    for (const [sessionId, status] of Object.entries(statuses)) {
-      const key = `${session.name}:${sessionId}`
-      const prev = sessionStates.get(key)
-      const isRunning = status.type === 'busy' || status.running === true
-      
-      if (prev && prev.wasRunning && !isRunning) {
-        // Agent just finished
-        console.log(`[agent-monitor] ${session.name} finished (was busy, now ${status.type || 'idle'})`)
-        await sendNotification(
-          'Agent Complete',
-          `${session.name} finished working`,
-          ['white_check_mark', 'robot'],
-          `${DASHBOARD_URL}/sessions/${session.name}`
-        )
-      }
-      
-      if (isRunning && (!prev || !prev.wasRunning)) {
-        console.log(`[agent-monitor] ${session.name} started working`)
-      }
-      
-      sessionStates.set(key, { wasRunning: isRunning })
+    const wasBusy = busyStates.get(session.name) || false
+    
+    if (wasBusy && !isBusy) {
+      // Agent just finished
+      console.log(`[monitor] ${session.name} finished!`)
+      await sendNotification(
+        'Agent Complete',
+        `${session.name} finished working`,
+        ['white_check_mark', 'robot'],
+        `${DASHBOARD_URL}/sessions/${session.name}`
+      )
+    } else if (!wasBusy && isBusy) {
+      console.log(`[monitor] ${session.name} started working`)
     }
+    
+    busyStates.set(session.name, isBusy)
   }
 }
 
@@ -114,20 +106,18 @@ async function main() {
   console.log(`[agent-monitor] Dashboard: ${DASHBOARD_URL}`)
   console.log(`[agent-monitor] Poll interval: ${POLL_INTERVAL}ms`)
   
-  // Initial check to populate states without sending notifications
-  const sessions = await getSessions()
+  // Initial check - populate states
+  const sessions = getSessions()
   for (const session of sessions) {
     if (!session.opencode_port || !session.tmux_exists) continue
-    const statuses = await getSessionStatus(session.opencode_port)
-    if (!statuses) continue
-    for (const [sessionId, status] of Object.entries(statuses)) {
-      const key = `${session.name}:${sessionId}`
-      const isRunning = status.type === 'busy' || status.running === true
-      sessionStates.set(key, { wasRunning: isRunning })
-      console.log(`[agent-monitor] Initial: ${session.name} = ${isRunning ? 'busy' : 'idle'}`)
+    const isBusy = await getSessionBusy(session.opencode_port)
+    if (isBusy !== null) {
+      busyStates.set(session.name, isBusy)
+      console.log(`[monitor] Initial: ${session.name} = ${isBusy ? 'busy' : 'idle'}`)
     }
   }
-  console.log(`[agent-monitor] Tracking ${sessionStates.size} session(s)`)
+  
+  console.log(`[agent-monitor] Tracking ${busyStates.size} session(s)`)
   
   // Start polling
   setInterval(checkSessions, POLL_INTERVAL)
@@ -135,7 +125,7 @@ async function main() {
   // Send startup notification
   await sendNotification(
     'Monitor Started',
-    'Agent monitor is now running',
+    `Watching ${busyStates.size} session(s)`,
     ['eyes'],
     DASHBOARD_URL
   )
