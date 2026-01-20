@@ -15,13 +15,16 @@ export function SessionTabbedView({ sessionName, ttydPort, opencodePort, tmuxExi
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<'agent' | 'terminal'>('agent')
   const [isRestarting, setIsRestarting] = useState(false)
-  const [isKilling, setIsKilling] = useState(false)
 
-  const handleRestart = async () => {
-    if (!confirm('Restart session services?')) return
+  const handleRestartServices = async () => {
+    if (!confirm('Restart dev services?')) return
     setIsRestarting(true)
     try {
-      await fetch(`/api/sessions/${sessionName}/restart`, { method: 'POST' })
+      await fetch(`/api/sessions/${sessionName}/restart`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'services' })
+      })
       router.refresh()
     } catch (e) {
       console.error('Failed to restart:', e)
@@ -30,83 +33,60 @@ export function SessionTabbedView({ sessionName, ttydPort, opencodePort, tmuxExi
     }
   }
 
-  const handleKill = async () => {
-    if (!confirm('Kill session? This will stop all services.')) return
-    setIsKilling(true)
-    try {
-      await fetch(`/api/sessions/${sessionName}/kill`, { method: 'POST' })
-      router.refresh()
-    } catch (e) {
-      console.error('Failed to kill:', e)
-    } finally {
-      setIsKilling(false)
-    }
-  }
-
   return (
     <div className="flex flex-col h-[calc(100vh-120px)]">
       <header className="flex items-center justify-between px-4 py-2 bg-surface-1 border-b border-neutral-800 shrink-0">
-        <div className="flex items-center gap-4">
+        {/* Left: Back + Session name */}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <button
             onClick={() => router.push('/')}
-            className="p-2 text-neutral-400 hover:text-white hover:bg-surface-2 rounded-lg transition-colors"
+            className="p-2 text-neutral-400 hover:text-white hover:bg-surface-2 rounded-lg transition-colors shrink-0"
             title="Back"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          
-          <h1 className="text-lg font-medium text-white">{sessionName}</h1>
-          
-          <div className="flex bg-surface-2 rounded-lg p-0.5">
-            <button
-              onClick={() => setActiveTab('agent')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                activeTab === 'agent' 
-                  ? 'bg-accent text-white' 
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              Agent
-            </button>
-            <button
-              onClick={() => setActiveTab('terminal')}
-              disabled={!ttydPort}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                activeTab === 'terminal' 
-                  ? 'bg-accent text-white' 
-                  : 'text-neutral-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed'
-              }`}
-            >
-              Terminal
-            </button>
-          </div>
+          <h1 className="text-lg font-medium text-white truncate">{sessionName}</h1>
         </div>
         
-        <div className="flex items-center gap-2">
+        {/* Center: Tab selector */}
+        <div className="flex bg-surface-2 rounded-lg p-0.5 shrink-0">
           <button
-            onClick={handleRestart}
+            onClick={() => setActiveTab('agent')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'agent' 
+                ? 'bg-accent text-white' 
+                : 'text-neutral-400 hover:text-white'
+            }`}
+          >
+            Agent
+          </button>
+          <button
+            onClick={() => setActiveTab('terminal')}
+            disabled={!ttydPort}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'terminal' 
+                ? 'bg-accent text-white' 
+                : 'text-neutral-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed'
+            }`}
+          >
+            Terminal
+          </button>
+        </div>
+        
+        {/* Right: Restart Services */}
+        <div className="flex items-center justify-end flex-1">
+          <button
+            onClick={handleRestartServices}
             disabled={isRestarting || !tmuxExists}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-neutral-400 hover:text-white hover:bg-surface-2 rounded-lg transition-colors disabled:opacity-50"
-            title="Restart services"
+            title="Restart dev services"
           >
             <svg className={`w-4 h-4 ${isRestarting ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            <span className="hidden sm:inline">Restart</span>
-          </button>
-          
-          <button
-            onClick={handleKill}
-            disabled={isKilling || !tmuxExists}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-neutral-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-50"
-            title="Kill session"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-            <span className="hidden sm:inline">Kill</span>
+            <span className="hidden sm:inline">Restart Services</span>
           </button>
         </div>
       </header>
