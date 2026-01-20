@@ -39,6 +39,7 @@ Does NOT run install scripts (use dev-new for fresh setup).
 
 Options:
   --agent <name>    Change agent (opencode|claude)
+  --agent-only      Restart agent only (not services)
   --services        Restart services only (not agent)
   --all             Restart agent and services (default)
   --help            Show this help
@@ -68,12 +69,19 @@ SESSION_NAME=""
 NEW_AGENT=""
 RESTART_AGENT=true
 RESTART_SERVICES=true
+AGENT_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --agent)
             NEW_AGENT="$2"
             shift 2
+            ;;
+        --agent-only)
+            AGENT_ONLY=true
+            RESTART_AGENT=true
+            RESTART_SERVICES=false
+            shift
             ;;
         --services)
             RESTART_AGENT=false
@@ -177,7 +185,8 @@ fi
 log_info "Creating servers window..."
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
 
-# Mouse support comes from global ~/.tmux.conf
+# Enable mouse mode for web/mobile terminal access
+tmux set-option -t "$SESSION_NAME" mouse on
 
 # Always start opencode server when recreating session
 if [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
