@@ -13,14 +13,6 @@ const statusColors = {
   unknown: 'bg-status-stopped',
 }
 
-const statusLabels = {
-  idle: 'Idle',
-  working: 'Working',
-  error: 'Error',
-  stopped: 'Stopped',
-  unknown: 'Unknown',
-}
-
 export function SessionCard({ session }: { session: Session }) {
   const router = useRouter()
   const [isDeleting, setIsDeleting] = useState(false)
@@ -40,63 +32,44 @@ export function SessionCard({ session }: { session: Session }) {
   const isWorking = status === 'working'
 
   return (
-    <a 
-      href={`/sessions/${session.name}`}
-      className="block bg-surface-1 border border-neutral-800 rounded-xl p-5 hover:border-neutral-700 transition-all group"
-    >
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="relative">
-            <div className={`w-3 h-3 rounded-full ${statusColors[status]} ${isWorking ? 'status-working' : ''}`} />
-          </div>
-          <div>
-            <h3 className="font-medium text-white group-hover:text-accent transition-colors">
-              {session.name}
-            </h3>
-            <p className="text-xs text-neutral-500">{statusLabels[status]}</p>
-          </div>
-        </div>
-        
-        <button
-          onClick={handleDelete}
-          disabled={isDeleting}
-          className="opacity-0 group-hover:opacity-100 p-1.5 text-neutral-500 hover:text-red-400 hover:bg-red-400/10 rounded transition-all"
-          title="Delete session"
+    <div className="flex items-center gap-4 bg-surface-1 border border-neutral-800 rounded-lg px-4 py-3 hover:border-neutral-700 transition-all group">
+      <div className={`w-2 h-2 rounded-full ${statusColors[status]} ${isWorking ? 'status-working' : ''}`} />
+      
+      <a 
+        href={`/sessions/${session.name}`}
+        className="font-medium text-white hover:text-accent transition-colors flex-1"
+      >
+        {session.name}
+      </a>
+      
+      <span className="text-sm text-neutral-500 hidden md:inline">{session.repo}</span>
+      <span className="text-sm text-neutral-600 font-mono hidden lg:inline">{session.branch}</span>
+      
+      {session.opencode_port ? (
+        <a
+          href={`/sessions/${session.name}/opencode`}
+          className="flex items-center gap-1.5 text-sm text-neutral-400 hover:text-accent transition-colors"
+          title="View OpenCode sessions"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
           </svg>
-        </button>
-      </div>
-      
-      <div className="space-y-2 text-sm">
-        <div className="flex items-center gap-2 text-neutral-400">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-          <span>{session.repo}</span>
-        </div>
-        
-        <div className="flex items-center gap-2 text-neutral-400">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-          <span className="truncate">{session.branch}</span>
-        </div>
-        
-        <div className="flex items-center gap-2 text-neutral-500">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-          </svg>
-          <span>{session.agent}</span>
-        </div>
-      </div>
-      
-      {session.attached && (
-        <div className="mt-4 pt-3 border-t border-neutral-800">
-          <span className="text-xs text-accent">● Attached</span>
-        </div>
+          <span className="hidden sm:inline">Sessions</span>
+        </a>
+      ) : (
+        <span className="text-sm text-neutral-600">—</span>
       )}
-    </a>
+      
+      <button
+        onClick={handleDelete}
+        disabled={isDeleting}
+        className="opacity-0 group-hover:opacity-100 p-1.5 text-neutral-500 hover:text-red-400 hover:bg-red-400/10 rounded transition-all"
+        title="Delete session"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+      </button>
+    </div>
   )
 }
