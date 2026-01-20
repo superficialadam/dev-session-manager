@@ -1,6 +1,7 @@
 import { getSessions, Session } from '@/lib/sessions'
 import { SessionCard } from '@/components/session-card'
 import { RefreshButton } from '@/components/refresh-button'
+import { MasterAgentFoldout } from '@/components/master-agent-foldout'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -12,7 +13,9 @@ export default async function HomePage() {
   const stoppedSessions = sessions.filter(s => !s.tmux_exists)
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <MasterAgentFoldout />
+      
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-white">Sessions</h1>
@@ -37,7 +40,7 @@ export default async function HomePage() {
           <p className="text-sm mt-2">Create one to get started</p>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-2">
           {sessions.map((session) => (
             <SessionCard key={session.name} session={session} />
           ))}

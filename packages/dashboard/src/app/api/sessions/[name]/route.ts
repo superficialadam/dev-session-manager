@@ -14,7 +14,7 @@ export async function DELETE(
     return NextResponse.json({ message: 'Session deleted successfully', output: stdout });
   } catch (error) {
     console.error('Error deleting session:', error);
-    return NextResponse.json({ error: 'Failed to delete session', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to delete session', details: error instanceof Error ? error.message : 'Unknown error' }, { status: 500 });
   }
 }
 
@@ -40,6 +40,6 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (error) {
     console.error('Error performing action on session:', error);
-    return NextResponse.json({ error: 'Failed to perform action', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to perform action', details: error instanceof Error ? error.message : 'Unknown error' }, { status: 500 });
   }
 }
