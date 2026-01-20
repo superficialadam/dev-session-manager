@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# dev-connect: Connect to a development session on hetzner
-# Opens neovim locally in the mutagen-synced directory
+# dev-connect: Connect to a development session with 3-pane Ghostty layout
 # Usage: dev-connect [session-name]
 #
 # Layout:
 #   ┌──────────────┬──────────────┐
 #   │   neovim     │              │
-#   │   (local)    │   opencode   │
+#   │  (remote)    │   opencode   │
 #   ├──────────────┤   (remote)   │
 #   │    mosh      │              │
 #   │ (dev-attach) │              │
@@ -16,8 +15,8 @@ set -euo pipefail
 
 SERVER="100.119.128.1"
 API_URL="http://${SERVER}:7777/api"
-LOCAL_MOUNT="$HOME/CODE/hetzner/CODE"
 
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -27,10 +26,12 @@ NC='\033[0m'
 log_error() { echo -e "${RED}✗${NC} $1" >&2; }
 log_info() { echo -e "${CYAN}→${NC} $1"; }
 
+# Fetch sessions from API
 fetch_sessions() {
     curl -s "${API_URL}/sessions" | jq '.sessions'
 }
 
+# Pick session interactively
 pick_session() {
     log_info "Fetching sessions from $SERVER..." >/dev/tty
 
@@ -72,9 +73,11 @@ pick_session() {
         exit 1
     fi
 
+    # Return the selected session JSON (only this goes to stdout)
     echo "$sessions_json" | jq ".[$((selection-1))]"
 }
 
+# Get session by name
 get_session() {
     local name="$1"
     local sessions_json
@@ -91,18 +94,17 @@ get_session() {
     echo "$session"
 }
 
+# Create local tmux session with 3-pane layout and connect
 connect_session() {
     local session_json="$1"
 
-    local name opencode_port
+    local name nvim_port opencode_port
     name=$(echo "$session_json" | jq -r '.name')
+    nvim_port=$(echo "$session_json" | jq -r '.nvim_port // empty')
     opencode_port=$(echo "$session_json" | jq -r '.opencode_port // empty')
 
-    local local_worktree="$LOCAL_MOUNT/worktrees/$name"
-
-    if [[ ! -d "$local_worktree" ]]; then
-        log_error "Local worktree not found at $local_worktree"
-        log_error "Is mutagen sync running?"
+    if [[ -z "$nvim_port" || "$nvim_port" == "null" ]]; then
+        log_error "No nvim port found for session: $name"
         exit 1
     fi
 
@@ -112,36 +114,58 @@ connect_session() {
     fi
 
     log_info "Connecting to session: $name"
+    log_info "  Neovim port: $nvim_port"
     log_info "  OpenCode port: $opencode_port"
-    log_info "  Local worktree: $local_worktree"
     echo ""
 
     local tmux_session="dev-${name}"
 
+    # Kill existing local session if it exists
     tmux kill-session -t "$tmux_session" 2>/dev/null || true
 
+    # Layout:
+    # ┌──────────────┬──────────────┐
+    # │   nvim       │              │
+    # │  (top-left)  │   opencode   │
+    # ├──────────────┤   (right)    │
+    # │    ssh       │              │
+    # │ (bottom-left)│              │
+    # └──────────────┴──────────────┘
+
+    # Create session (starts in pane for nvim - top-left)
     tmux new-session -d -s "$tmux_session" -n "dev"
     tmux set-option -t "$tmux_session" mouse on
     tmux set-option -t "$tmux_session" set-clipboard on
+    # Use pbcopy for yanking in copy mode
     tmux bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel "pbcopy"
     tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
 
+    # Split right for opencode (now in right pane)
     tmux split-window -t "$tmux_session:dev" -h -p 50
+    # Send opencode command to current (right) pane
     tmux send-keys -t "$tmux_session:dev" "opencode attach http://${SERVER}:${opencode_port}" Enter
 
+    # Go back to left pane
     tmux select-pane -t "$tmux_session:dev" -L
 
+    # Split down for ssh (now in bottom-left pane)
     tmux split-window -t "$tmux_session:dev" -v -p 50
+    # Send mosh command to current (bottom-left) pane
     tmux send-keys -t "$tmux_session:dev" "mosh hetzner -- tmux attach -t ${name}" Enter
 
+    # Go to top-left pane for nvim
     tmux select-pane -t "$tmux_session:dev" -U
-    tmux send-keys -t "$tmux_session:dev" "cd '$local_worktree' && nvim" Enter
+    # Send nvim command
+    tmux send-keys -t "$tmux_session:dev" "nvim --remote-ui --server ${SERVER}:${nvim_port}" Enter
 
+    # Select the opencode pane (right)
     tmux select-pane -t "$tmux_session:dev" -R
 
+    # Attach to the session
     exec tmux attach-session -t "$tmux_session"
 }
 
+# Main
 main() {
     local session_json
 

@@ -12,6 +12,7 @@ import {
 } from '@/lib/opencode-api'
 
 const MASTER_AGENT_PORT = 4000
+const MASTER_AGENT_DIRECTORY = '/home/adam/CODE/dev-session-manager'
 
 const statusColors: Record<string, string> = {
   running: 'bg-status-working',
@@ -20,6 +21,10 @@ const statusColors: Record<string, string> = {
 
 function isSubagentSession(session: OpencodeSession): boolean {
   return session.parentID !== undefined && session.parentID !== null
+}
+
+function isMasterAgentSession(session: OpencodeSession): boolean {
+  return session.directory === MASTER_AGENT_DIRECTORY
 }
 
 function hasContent(message: OpencodeMessageWithParts): boolean {
@@ -63,7 +68,7 @@ export function MasterAgentFoldout() {
         getOpencodeSessions(MASTER_AGENT_PORT),
         getOpencodeSessionStatuses(MASTER_AGENT_PORT),
       ])
-      const mainSessions = sessionsData.filter(s => !isSubagentSession(s))
+      const mainSessions = sessionsData.filter(s => !isSubagentSession(s) && isMasterAgentSession(s))
       setSessions(mainSessions)
       setSessionStatuses(statusesData)
       setIsConnected(true)

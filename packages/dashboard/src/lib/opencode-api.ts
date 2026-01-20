@@ -5,6 +5,7 @@ export interface OpencodeSession {
   id: string
   parentID?: string
   title?: string
+  directory?: string
   createdAt: string
   updatedAt: string
   share?: {
