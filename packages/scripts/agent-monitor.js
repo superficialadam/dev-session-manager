@@ -82,19 +82,25 @@ async function checkSessions() {
     if (!statuses) continue
     
     // Check each OpenCode session's status
+    // API returns { type: "busy" } when running, { type: "idle" } or {} when idle
     for (const [sessionId, status] of Object.entries(statuses)) {
       const key = `${session.name}:${sessionId}`
       const prev = sessionStates.get(key)
-      const isRunning = status.running === true
+      const isRunning = status.type === 'busy' || status.running === true
       
       if (prev && prev.wasRunning && !isRunning) {
         // Agent just finished
+        console.log(`[agent-monitor] ${session.name} finished (was busy, now ${status.type || 'idle'})`)
         await sendNotification(
           'Agent Complete',
           `${session.name} finished working`,
           ['white_check_mark', 'robot'],
           `${DASHBOARD_URL}/sessions/${session.name}`
         )
+      }
+      
+      if (isRunning && (!prev || !prev.wasRunning)) {
+        console.log(`[agent-monitor] ${session.name} started working`)
       }
       
       sessionStates.set(key, { wasRunning: isRunning })
@@ -116,7 +122,9 @@ async function main() {
     if (!statuses) continue
     for (const [sessionId, status] of Object.entries(statuses)) {
       const key = `${session.name}:${sessionId}`
-      sessionStates.set(key, { wasRunning: status.running === true })
+      const isRunning = status.type === 'busy' || status.running === true
+      sessionStates.set(key, { wasRunning: isRunning })
+      console.log(`[agent-monitor] Initial: ${session.name} = ${isRunning ? 'busy' : 'idle'}`)
     }
   }
   console.log(`[agent-monitor] Tracking ${sessionStates.size} session(s)`)
