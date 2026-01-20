@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   getOpencodeSessions,
   getOpencodeMessages,
@@ -37,6 +38,7 @@ function hasContent(message: OpencodeMessageWithParts): boolean {
 }
 
 export function MasterAgentFoldout() {
+  const router = useRouter()
   const [isOpen, setIsOpen] = useState(false)
   const [sessions, setSessions] = useState<OpencodeSession[]>([])
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, OpencodeSessionStatus>>({})
@@ -259,6 +261,16 @@ export function MasterAgentFoldout() {
                 </div>
               )}
             </div>
+            
+            <button
+              onClick={() => router.push('/new')}
+              className="p-1.5 text-neutral-400 hover:text-white hover:bg-surface-1 rounded transition-colors"
+              title="New session"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
             
             <button
               onClick={fetchSessions}
