@@ -14,6 +14,8 @@ REPOS_FILE="$DEV_DIR/repos.json"
 SESSIONS_DIR="$DEV_DIR/sessions"
 CODE_DIR="$HOME/CODE"
 WORKTREES_DIR="$CODE_DIR/worktrees"
+TEMPLATES_DIR="$DEV_DIR/dev-config/templates"
+GITHUB_USER="superficialadam"
 
 # ttyd port range
 TTYD_PORT_MIN=7700
@@ -26,6 +28,9 @@ OPENCODE_PORT_MAX=4199
 # nvim server port range
 NVIM_PORT_MIN=6100
 NVIM_PORT_MAX=6199
+
+# Source port allocation library
+source "$SCRIPT_DIR/lib/ports.sh"
 
 # Colors
 RED='\033[0;31m'
@@ -42,6 +47,7 @@ log_error() { echo -e "${RED}✗${NC} $1" >&2; }
 usage() {
     cat << EOF
 Usage: dev-new <repo> <branch> [options]
+       dev-new --create <name> [--template <type>] [options]
 
 Create a new development session with worktree, tmux, and AI agent.
 
@@ -50,15 +56,18 @@ Arguments:
   branch    Branch name (created if doesn't exist)
 
 Options:
-  --agent <n>       Agent to use: opencode, claude (default: from config)
-  --no-agent           Don't start an agent
-  --no-servers         Don't start dev servers
-  --no-ttyd            Don't start ttyd web terminal
-  --help               Show this help
+  --create <name>    Create a new repo instead of using existing
+  --template <type>  Template to use with --create (node, python)
+  --agent <n>        Agent to use: opencode, claude (default: from config)
+  --no-agent         Don't start an agent
+  --no-servers       Don't start dev servers
+  --no-ttyd          Don't start ttyd web terminal
+  --help             Show this help
 
 Examples:
   dev-new my-app feature/auth
   dev-new my-app fix/bug-123 --agent claude
+  dev-new --create my-project --template node
 EOF
     exit 0
 }
@@ -95,12 +104,23 @@ get_session_port() {
 REPO=""
 BRANCH=""
 AGENT=""
+CREATE_NEW=false
+TEMPLATE=""
 START_AGENT=true
 START_SERVERS=true
 START_TTYD=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --create)
+            CREATE_NEW=true
+            REPO="$2"
+            shift 2
+            ;;
+        --template)
+            TEMPLATE="$2"
+            shift 2
+            ;;
         --agent)
             AGENT="$2"
             shift 2
@@ -138,7 +158,68 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$REPO" || -z "$BRANCH" ]]; then
+if $CREATE_NEW; then
+    if [[ -z "$REPO" ]]; then
+        log_error "Project name required with --create"
+        usage
+    fi
+    
+    PROJECT_NAME="$REPO"
+    REPO_PATH="$CODE_DIR/$PROJECT_NAME"
+    
+    if [[ -d "$REPO_PATH" ]]; then
+        log_error "Directory already exists: $REPO_PATH"
+        exit 1
+    fi
+    
+    log_info "Creating new project: $PROJECT_NAME"
+    mkdir -p "$REPO_PATH"
+    
+    if [[ -d "$TEMPLATES_DIR/base" ]]; then
+        log_info "Applying base template..."
+        cp -r "$TEMPLATES_DIR/base/." "$REPO_PATH/"
+    fi
+    
+    if [[ -n "$TEMPLATE" ]]; then
+        if [[ ! -d "$TEMPLATES_DIR/$TEMPLATE" ]]; then
+            log_error "Template not found: $TEMPLATE"
+            log_info "Available templates:"
+            ls -1 "$TEMPLATES_DIR" | grep -v base | sed 's/^/  /'
+            rm -rf "$REPO_PATH"
+            exit 1
+        fi
+        log_info "Applying $TEMPLATE template..."
+        cp -r "$TEMPLATES_DIR/$TEMPLATE/." "$REPO_PATH/"
+        
+        find "$REPO_PATH" -type f -exec sed -i "s/{{PROJECT_NAME}}/$PROJECT_NAME/g" {} \;
+    fi
+    
+    log_info "Initializing git..."
+    git -C "$REPO_PATH" init -b main
+    git -C "$REPO_PATH" add -A
+    git -C "$REPO_PATH" commit -m "Initial commit from dev-new --create"
+    
+    log_info "Creating GitHub repo..."
+    gh repo create "$GITHUB_USER/$PROJECT_NAME" --private --source="$REPO_PATH" --push
+    
+    log_info "Adding to repos.json..."
+    if [[ ! -f "$REPOS_FILE" ]]; then
+        echo '{}' > "$REPOS_FILE"
+    fi
+    
+    jq --arg name "$PROJECT_NAME" \
+       --arg url "git@github.com:$GITHUB_USER/$PROJECT_NAME.git" \
+       --arg path "$REPO_PATH" \
+       '.[$name] = {url: $url, path: $path, default_branch: "main", github: "'"$GITHUB_USER"'/"+$name, dev_servers: []}' \
+       "$REPOS_FILE" > "$REPOS_FILE.tmp" && mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+    
+    log_success "Project created: $PROJECT_NAME"
+    
+    REPO="$PROJECT_NAME"
+    BRANCH="main"
+fi
+
+if [[ -z "$REPO" ]] || { ! $CREATE_NEW && [[ -z "$BRANCH" ]]; }; then
     log_error "Missing required arguments"
     usage
 fi
@@ -161,6 +242,8 @@ fi
 REPO_PATH=$(echo "$REPO_INFO" | jq -r '.path')
 DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch // "main"')
 DEV_SERVERS=$(echo "$REPO_INFO" | jq -r '.dev_servers // []')
+SETUP_INSTALL=$(echo "$REPO_INFO" | jq -r '.setup.install // []')
+REPO_SERVICES=$(echo "$REPO_INFO" | jq -r '.services // []')
 
 if [[ -z "$AGENT" ]]; then
     AGENT=$(jq -r '.default_agent // "opencode"' "$CONFIG_FILE" 2>/dev/null || echo "opencode")
@@ -175,12 +258,17 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     exit 1
 fi
 
-WORKTREE_PATH="$WORKTREES_DIR/$SESSION_NAME"
 SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
 
-if [[ -d "$WORKTREE_PATH" ]]; then
-    log_error "Worktree path already exists: $WORKTREE_PATH"
-    exit 1
+if $CREATE_NEW; then
+    WORKTREE_PATH="$REPO_PATH"
+else
+    WORKTREE_PATH="$WORKTREES_DIR/$SESSION_NAME"
+    
+    if [[ -d "$WORKTREE_PATH" ]]; then
+        log_error "Worktree path already exists: $WORKTREE_PATH"
+        exit 1
+    fi
 fi
 
 log_info "Creating session: $SESSION_NAME"
@@ -188,36 +276,33 @@ log_info "Repo: $REPO ($REPO_PATH)"
 log_info "Branch: $BRANCH"
 log_info "Agent: $AGENT"
 
-# Fetch latest
-log_info "Fetching latest..."
-git -C "$REPO_PATH" fetch --all --prune
+if ! $CREATE_NEW; then
+    log_info "Fetching latest..."
+    git -C "$REPO_PATH" fetch --all --prune
 
-# Check if branch exists
-BRANCH_EXISTS=false
-if git -C "$REPO_PATH" show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
-    BRANCH_EXISTS=true
-elif git -C "$REPO_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
-    BRANCH_EXISTS=true
+    BRANCH_EXISTS=false
+    if git -C "$REPO_PATH" show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
+        BRANCH_EXISTS=true
+    elif git -C "$REPO_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
+        BRANCH_EXISTS=true
+    fi
+
+    log_info "Creating worktree..."
+    mkdir -p "$WORKTREES_DIR"
+    if $BRANCH_EXISTS; then
+        git -C "$REPO_PATH" worktree add "$WORKTREE_PATH" "$BRANCH"
+    else
+        log_info "Branch doesn't exist, creating from $DEFAULT_BRANCH..."
+        git -C "$REPO_PATH" worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"
+    fi
+    log_success "Worktree created: $WORKTREE_PATH"
+
+    log_info "Setting up remote tracking..."
+    git -C "$WORKTREE_PATH" push -u origin "$BRANCH" 2>/dev/null || {
+        git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH" "$BRANCH" 2>/dev/null || true
+    }
+    log_success "Branch tracking: origin/$BRANCH"
 fi
-
-# Create worktree
-log_info "Creating worktree..."
-mkdir -p "$WORKTREES_DIR"
-if $BRANCH_EXISTS; then
-    git -C "$REPO_PATH" worktree add "$WORKTREE_PATH" "$BRANCH"
-else
-    log_info "Branch doesn't exist, creating from $DEFAULT_BRANCH..."
-    git -C "$REPO_PATH" worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"
-fi
-log_success "Worktree created: $WORKTREE_PATH"
-
-# Push branch to remote and set upstream tracking
-log_info "Setting up remote tracking..."
-git -C "$WORKTREE_PATH" push -u origin "$BRANCH" 2>/dev/null || {
-    # If push fails (e.g., branch already exists on remote), just set tracking
-    git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH" "$BRANCH" 2>/dev/null || true
-}
-log_success "Branch tracking: origin/$BRANCH"
 
 # Install dependencies
 log_info "Installing dependencies..."
@@ -236,16 +321,22 @@ elif [[ -f "$WORKTREE_PATH/package.json" ]]; then
     fi
 fi
 
-# Copy .env files from main repository
-log_info "Syncing .env files from main repository..."
+# Run custom install scripts from repo config
+INSTALL_COUNT=$(echo "$SETUP_INSTALL" | jq 'length')
+if [[ "$INSTALL_COUNT" -gt 0 ]]; then
+    log_info "Running $INSTALL_COUNT custom install script(s)..."
+    echo "$SETUP_INSTALL" | jq -r '.[]' | while read -r install_cmd; do
+        log_info "Running: $install_cmd"
+        (cd "$WORKTREE_PATH" && eval "$install_cmd") || {
+            log_warn "Install script failed: $install_cmd"
+        }
+    done
+    log_success "Custom install scripts completed"
+fi
 
-# REPO_PATH is now the main non-bare repo (e.g. ~/CODE/cos-capture)
-if [[ -d "$REPO_PATH" ]]; then
-    # Use rsync to copy only .env files, preserving directory structure
-    # --include='*/'       : visit all directories
-    # --include='**/.env*' : include .env, .env.local, .env.development, etc.
-    # --exclude='*'        : exclude everything else
-    # --prune-empty-dirs   : don't create empty directories
+# Copy .env files from main repository (skip for new projects)
+if ! $CREATE_NEW && [[ -d "$REPO_PATH" ]] && [[ "$REPO_PATH" != "$WORKTREE_PATH" ]]; then
+    log_info "Syncing .env files from main repository..."
     
     if command -v rsync &> /dev/null; then
         rsync -a --prune-empty-dirs \
@@ -366,23 +457,15 @@ log_info "Creating tmux session..."
 # Create servers window
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
 
-# Enable mouse support with proper terminal settings to avoid mouse tracking corruption
-tmux set-option -t "$SESSION_NAME" mouse on
-tmux set-option -t "$SESSION_NAME" set-clipboard on
-tmux set-option -t "$SESSION_NAME" terminal-features 'xterm*:clipboard:ccolour:cstyle:focus:title'
-tmux set-option -t "$SESSION_NAME" -g terminal-overrides 'xterm*:smcup@:rmcup@'
+# Note: mouse mode disabled to prevent escape sequence garbage on SSH disconnect
 
 # Start opencode server in background if requested
 if $START_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
-    tmux send-keys -t "$SESSION_NAME:servers" "cd $WORKTREE_PATH && opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
+    tmux send-keys -t "$SESSION_NAME:servers" "cd $WORKTREE_PATH && opencode web --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
-# Start nvim server in background if port available
-if [[ -n "$NVIM_PORT" ]]; then
-    tmux send-keys -t "$SESSION_NAME:servers" "nvim --headless --listen 0.0.0.0:$NVIM_PORT &" Enter
-    log_info "Neovim server running on port $NVIM_PORT"
-fi
+
 
 # Create pane layout: vertical split, then left horizontally split
 tmux split-window -t "$SESSION_NAME:servers" -h  # vertical split: left .0, right .1
@@ -416,13 +499,75 @@ fi
 
 
 
-# Start dev servers in the servers window panes
-if $START_SERVERS; then
+# Start services with port allocation
+SERVICES_JSON='{"services":[]}'
+REPO_SERVICE_COUNT=$(echo "$REPO_SERVICES" | jq 'length')
+
+if $START_SERVERS && [[ "$REPO_SERVICE_COUNT" -gt 0 ]]; then
+    log_info "Starting $REPO_SERVICE_COUNT service(s) with port allocation..."
+
+    PANE_ORDER=(0 2 1)
+    SERVICE_IDX=0
+    WINDOW_IDX=0
+    
+    echo "$REPO_SERVICES" | jq -c '.[]' | while read -r service; do
+        SERVICE_NAME=$(echo "$service" | jq -r '.name')
+        SERVICE_CMD=$(echo "$service" | jq -r '.cmd')
+        SERVICE_CWD=$(echo "$service" | jq -r '.cwd // ""')
+        PORT_ENV=$(echo "$service" | jq -r '.port_env // ""')
+        
+        ALLOCATED_PORT=""
+        if [[ -n "$PORT_ENV" ]]; then
+            ALLOCATED_PORT=$(allocate_service_port)
+            if [[ -z "$ALLOCATED_PORT" ]]; then
+                log_warn "Could not allocate port for service $SERVICE_NAME"
+            fi
+        fi
+        
+        PANE_IN_WINDOW=$((SERVICE_IDX % 3))
+        PANE=${PANE_ORDER[$PANE_IN_WINDOW]}
+        
+        if [[ $SERVICE_IDX -ge 3 ]] && [[ $PANE_IN_WINDOW -eq 0 ]]; then
+            WINDOW_IDX=$((WINDOW_IDX + 1))
+            WINDOW_NAME="services-$WINDOW_IDX"
+            log_info "Creating additional window: $WINDOW_NAME"
+            tmux new-window -t "$SESSION_NAME" -n "$WINDOW_NAME" -c "$WORKTREE_PATH"
+            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -h -c "$WORKTREE_PATH"
+            tmux select-pane -t "$SESSION_NAME:$WINDOW_NAME.0"
+            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -v -c "$WORKTREE_PATH"
+        fi
+        
+        TARGET_WINDOW="servers"
+        if [[ $WINDOW_IDX -gt 0 ]]; then
+            TARGET_WINDOW="services-$WINDOW_IDX"
+        fi
+        PANE_TARGET="$SESSION_NAME:$TARGET_WINDOW.$PANE"
+        
+        FULL_CWD="$WORKTREE_PATH"
+        [[ -n "$SERVICE_CWD" ]] && FULL_CWD="$WORKTREE_PATH/$SERVICE_CWD"
+        
+        FULL_CMD="cd $FULL_CWD && "
+        if [[ -n "$ALLOCATED_PORT" && -n "$PORT_ENV" ]]; then
+            FULL_CMD+="$PORT_ENV=$ALLOCATED_PORT "
+            log_info "Service $SERVICE_NAME: port $ALLOCATED_PORT"
+        fi
+        FULL_CMD+="$SERVICE_CMD"
+        
+        tmux send-keys -t "$PANE_TARGET" "$FULL_CMD" Enter
+        
+        add_service "$SERVICE_NAME" "${ALLOCATED_PORT:-0}" "$PANE_TARGET" "$SERVICE_CMD" "$SERVICE_CWD"
+        
+        SERVICE_IDX=$((SERVICE_IDX + 1))
+    done
+    
+    save_services "$SESSION_NAME"
+    log_success "Services started and saved to services.json"
+
+elif $START_SERVERS; then
     SERVER_COUNT=$(echo "$DEV_SERVERS" | jq 'length')
     if [[ "$SERVER_COUNT" -gt 0 ]]; then
-        log_info "Starting $SERVER_COUNT dev server(s)..."
+        log_info "Starting $SERVER_COUNT dev server(s) (legacy config)..."
 
-        # Pane order: top-left (.0), bottom-left (.2), right (.1)
         PANE_ORDER=(0 2 1)
         i=0
         echo "$DEV_SERVERS" | jq -c '.[]' | while read -r server; do
@@ -451,6 +596,8 @@ echo ""
 echo "Commands:"
 echo "  dev-attach $SESSION_NAME          # attach in terminal"
 echo "  dev-send $SESSION_NAME \"prompt\"   # send prompt"
+echo "  dev-ports $SESSION_NAME           # show service ports"
+echo "  dev-logs $SESSION_NAME [service]  # tail service logs"
 echo ""
 echo "Web interfaces:"
 if [[ -n "$TTYD_PORT" ]]; then
@@ -459,6 +606,9 @@ fi
 if [[ -n "$OPENCODE_PORT" ]]; then
 echo "  OpenCode: http://localhost:$OPENCODE_PORT"
 fi
-if [[ -n "$NVIM_PORT" ]]; then
-echo "  Neovim: nvim --remote-ui --server localhost:$NVIM_PORT"
+
+if [[ -f "$SESSION_DIR/services.json" ]]; then
+    echo ""
+    echo "Services:"
+    jq -r '.services[] | "  \(.name): http://localhost:\(.port)"' "$SESSION_DIR/services.json" 2>/dev/null || true
 fi

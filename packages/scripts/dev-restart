@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# dev-restart: Restart the agent or nvim in a development session
-# Usage: dev-restart <session-name> [--agent opencode|claude] [--nvim]
+# dev-restart: Restart services and agent in a development session
+# Usage: dev-restart <session-name> [--agent opencode|claude] [--services]
 
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 DEFAULT_DEV_DIR="$HOME/.dev-sessions"
 DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
 SESSIONS_DIR="$DEV_DIR/sessions"
+REPOS_FILE="$DEV_DIR/repos.json"
 
-# opencode server port range
+source "$SCRIPT_DIR/lib/ports.sh"
+
 OPENCODE_PORT_MIN=4100
 OPENCODE_PORT_MAX=4199
 
-# nvim server port range
 NVIM_PORT_MIN=6100
 NVIM_PORT_MAX=6199
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -34,24 +34,23 @@ usage() {
     cat << EOF
 Usage: dev-restart <session-name> [options]
 
-Restart the agent or nvim in a development session.
+Restart services and agent in a development session.
+Does NOT run install scripts (use dev-new for fresh setup).
 
 Options:
   --agent <name>    Change agent (opencode|claude)
-  --nvim            Restart nvim instead of agent
-  --all             Restart both agent and nvim
+  --services        Restart services only (not agent)
+  --all             Restart agent and services (default)
   --help            Show this help
 
 Examples:
   dev-restart my-session
   dev-restart my-session --agent claude
-  dev-restart my-session --nvim
-  dev-restart my-session --all
+  dev-restart my-session --services
 EOF
     exit 0
 }
 
-# Generate a deterministic port for a session name (hash-based)
 get_session_port() {
     local session_name=$1
     local min=$2
@@ -65,24 +64,10 @@ get_session_port() {
     echo "$port"
 }
 
-# Find next available port in range
-find_available_port() {
-    local min=$1
-    local max=$2
-    for port in $(seq $min $max); do
-        if ! ss -tlnp | grep -q ":$port "; then
-            echo "$port"
-            return
-        fi
-    done
-    echo ""
-}
-
-# Parse arguments
 SESSION_NAME=""
 NEW_AGENT=""
 RESTART_AGENT=true
-RESTART_NVIM=false
+RESTART_SERVICES=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -90,14 +75,14 @@ while [[ $# -gt 0 ]]; do
             NEW_AGENT="$2"
             shift 2
             ;;
-        --nvim)
+        --services)
             RESTART_AGENT=false
-            RESTART_NVIM=true
+            RESTART_SERVICES=true
             shift
             ;;
         --all)
             RESTART_AGENT=true
-            RESTART_NVIM=true
+            RESTART_SERVICES=true
             shift
             ;;
         --help|-h)
@@ -192,31 +177,73 @@ fi
 log_info "Creating servers window..."
 tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE" bash -c 'eval "$(mise activate bash 2>/dev/null || true)" && exec bash'
 
-log_info "Enabling mouse support..."
-tmux set-option -t "$SESSION_NAME" mouse on
-tmux set-option -t "$SESSION_NAME" set-clipboard on
-tmux set-option -t "$SESSION_NAME" terminal-features 'xterm*:clipboard:ccolour:cstyle:focus:title'
-tmux set-option -t "$SESSION_NAME" -g terminal-overrides 'xterm*:smcup@:rmcup@'
+# Mouse support comes from global ~/.tmux.conf
 
 # Always start opencode server when recreating session
 if [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
     log_info "Starting OpenCode server..."
-    tmux send-keys -t "$SESSION_NAME:servers" "cd $WORKTREE && opencode serve --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
+    tmux send-keys -t "$SESSION_NAME:servers" "cd $WORKTREE && opencode web --port $OPENCODE_PORT --hostname 0.0.0.0 &" Enter
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
-# Always start nvim server when recreating session
-if [[ -n "$NVIM_PORT" ]]; then
-    log_info "Starting Neovim server..."
-    tmux send-keys -t "$SESSION_NAME:servers" "nvim --headless --listen 0.0.0.0:$NVIM_PORT &" Enter
-    log_info "Neovim server running on port $NVIM_PORT"
-fi
+
 
 log_info "Creating pane layout..."
-tmux split-window -t "$SESSION_NAME:servers" -h  # vertical split: left .0, right .1
+tmux split-window -t "$SESSION_NAME:servers" -h -c "$WORKTREE"
 tmux select-pane -t "$SESSION_NAME:servers.0"
-tmux split-window -t "$SESSION_NAME:servers" -v  # horizontal split left: top .0, bottom .2 (since .1 is right)
+tmux split-window -t "$SESSION_NAME:servers" -v -c "$WORKTREE"
 tmux select-layout -t "$SESSION_NAME:servers" tiled
+
+SERVICES_FILE="$SESSION_DIR/services.json"
+if $RESTART_SERVICES && [[ -f "$SERVICES_FILE" ]]; then
+    log_info "Restarting services from services.json..."
+    
+    PANE_ORDER=(0 2 1)
+    SERVICE_IDX=0
+    WINDOW_IDX=0
+    
+    jq -c '.services[]' "$SERVICES_FILE" | while read -r service; do
+        SERVICE_NAME=$(echo "$service" | jq -r '.name')
+        SERVICE_CMD=$(echo "$service" | jq -r '.cmd')
+        SERVICE_CWD=$(echo "$service" | jq -r '.cwd // ""')
+        SERVICE_PORT=$(echo "$service" | jq -r '.port // 0')
+        
+        PANE_IN_WINDOW=$((SERVICE_IDX % 3))
+        PANE=${PANE_ORDER[$PANE_IN_WINDOW]}
+        
+        if [[ $SERVICE_IDX -ge 3 ]] && [[ $PANE_IN_WINDOW -eq 0 ]]; then
+            WINDOW_IDX=$((WINDOW_IDX + 1))
+            WINDOW_NAME="services-$WINDOW_IDX"
+            log_info "Creating additional window: $WINDOW_NAME"
+            tmux new-window -t "$SESSION_NAME" -n "$WINDOW_NAME" -c "$WORKTREE"
+            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -h -c "$WORKTREE"
+            tmux select-pane -t "$SESSION_NAME:$WINDOW_NAME.0"
+            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -v -c "$WORKTREE"
+        fi
+        
+        TARGET_WINDOW="servers"
+        if [[ $WINDOW_IDX -gt 0 ]]; then
+            TARGET_WINDOW="services-$WINDOW_IDX"
+        fi
+        PANE_TARGET="$SESSION_NAME:$TARGET_WINDOW.$PANE"
+        
+        FULL_CWD="$WORKTREE"
+        [[ -n "$SERVICE_CWD" ]] && FULL_CWD="$WORKTREE/$SERVICE_CWD"
+        
+        FULL_CMD="cd $FULL_CWD && "
+        if [[ "$SERVICE_PORT" -gt 0 ]]; then
+            PORT_ENV=$(echo "$service" | jq -r '.port_env // "PORT"')
+            FULL_CMD+="$PORT_ENV=$SERVICE_PORT "
+            log_info "Service $SERVICE_NAME: port $SERVICE_PORT"
+        fi
+        FULL_CMD+="$SERVICE_CMD"
+        
+        tmux send-keys -t "$PANE_TARGET" "$FULL_CMD" Enter
+        SERVICE_IDX=$((SERVICE_IDX + 1))
+    done
+    
+    log_success "Services restarted"
+fi
 
 log_info "Selecting servers window..."
 tmux select-window -t "$SESSION_NAME:servers"
@@ -230,14 +257,16 @@ fi
 
 log_success "Session restarted successfully"
 
-# Show web interfaces
 echo ""
 echo "Web interfaces:"
 if [[ -n "$OPENCODE_PORT" ]]; then
 echo "  OpenCode: http://localhost:$OPENCODE_PORT"
 fi
-if [[ -n "$NVIM_PORT" ]]; then
-echo "  Neovim: nvim --remote-ui --server localhost:$NVIM_PORT"
+
+if [[ -f "$SERVICES_FILE" ]]; then
+    echo ""
+    echo "Services:"
+    jq -r '.services[] | select(.port > 0) | "  \(.name): http://localhost:\(.port)"' "$SERVICES_FILE" 2>/dev/null || true
 fi
 
 # Update last_activity
