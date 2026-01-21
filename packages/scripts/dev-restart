@@ -195,23 +195,58 @@ if [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
-
-
 log_info "Creating pane layout..."
 tmux split-window -t "$SESSION_NAME:servers" -h -c "$WORKTREE"
 tmux select-pane -t "$SESSION_NAME:servers.0"
 tmux split-window -t "$SESSION_NAME:servers" -v -c "$WORKTREE"
-tmux select-layout -t "$SESSION_NAME:servers" tiled
+tmux select-pane -t "$SESSION_NAME:servers.0"
+tmux split-window -t "$SESSION_NAME:servers" -v -c "$WORKTREE"
+
+LEFT_PANE_ORDER=()
+while read -r pane_index pane_left pane_top; do
+    if [[ "$pane_left" == "0" ]]; then
+        LEFT_PANE_ORDER+=("$pane_index:$pane_top")
+    fi
+done < <(tmux list-panes -t "$SESSION_NAME:servers" -F "#{pane_index} #{pane_left} #{pane_top}")
+
+IFS=$'\n' sorted_left=($(sort -t: -k2,2n <<<"${LEFT_PANE_ORDER[*]}"))
+unset IFS
+LEFT_PANES=()
+for entry in "${sorted_left[@]}"; do
+    LEFT_PANES+=("${entry%%:*}")
+done
+
+RIGHT_PANE=""
+RIGHT_LEFT=-1
+while read -r pane_index pane_left; do
+    if (( pane_left > RIGHT_LEFT )); then
+        RIGHT_LEFT=$pane_left
+        RIGHT_PANE=$pane_index
+    fi
+done < <(tmux list-panes -t "$SESSION_NAME:servers" -F "#{pane_index} #{pane_left}")
+
+if [[ -n "$RIGHT_PANE" && -n "$OPENCODE_PORT" ]]; then
+    tmux send-keys -t "$SESSION_NAME:servers.$RIGHT_PANE" "opencode attach http://localhost:$OPENCODE_PORT" Enter
+fi
+
+tmux new-window -t "$SESSION_NAME" -n "nvim" -c "$WORKTREE"
+tmux send-keys -t "$SESSION_NAME:nvim" "nvim" Enter
 
 SERVICES_FILE="$SESSION_DIR/services.json"
 if $RESTART_SERVICES && [[ -f "$SERVICES_FILE" ]]; then
     log_info "Restarting services from services.json..."
     
-    PANE_ORDER=(0 2 1)
+    PANE_ORDER=("${LEFT_PANES[@]}")
+    if [[ ${#PANE_ORDER[@]} -lt 3 ]]; then
+        PANE_ORDER=(0 1 2)
+    fi
     SERVICE_IDX=0
-    WINDOW_IDX=0
     
     jq -c '.services[]' "$SERVICES_FILE" | while read -r service; do
+        if [[ $SERVICE_IDX -ge 3 ]]; then
+            log_warn "More than 3 services, only restarting first 3"
+            break
+        fi
         SERVICE_NAME=$(echo "$service" | jq -r '.name')
         SERVICE_CMD=$(echo "$service" | jq -r '.cmd')
         SERVICE_CWD=$(echo "$service" | jq -r '.cwd // ""')
@@ -220,21 +255,7 @@ if $RESTART_SERVICES && [[ -f "$SERVICES_FILE" ]]; then
         PANE_IN_WINDOW=$((SERVICE_IDX % 3))
         PANE=${PANE_ORDER[$PANE_IN_WINDOW]}
         
-        if [[ $SERVICE_IDX -ge 3 ]] && [[ $PANE_IN_WINDOW -eq 0 ]]; then
-            WINDOW_IDX=$((WINDOW_IDX + 1))
-            WINDOW_NAME="services-$WINDOW_IDX"
-            log_info "Creating additional window: $WINDOW_NAME"
-            tmux new-window -t "$SESSION_NAME" -n "$WINDOW_NAME" -c "$WORKTREE"
-            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -h -c "$WORKTREE"
-            tmux select-pane -t "$SESSION_NAME:$WINDOW_NAME.0"
-            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -v -c "$WORKTREE"
-        fi
-        
-        TARGET_WINDOW="servers"
-        if [[ $WINDOW_IDX -gt 0 ]]; then
-            TARGET_WINDOW="services-$WINDOW_IDX"
-        fi
-        PANE_TARGET="$SESSION_NAME:$TARGET_WINDOW.$PANE"
+        PANE_TARGET="$SESSION_NAME:servers.$PANE"
         
         FULL_CWD="$WORKTREE"
         [[ -n "$SERVICE_CWD" ]] && FULL_CWD="$WORKTREE/$SERVICE_CWD"

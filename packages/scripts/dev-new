@@ -304,23 +304,6 @@ if ! $CREATE_NEW; then
     log_success "Branch tracking: origin/$BRANCH"
 fi
 
-# Install dependencies
-log_info "Installing dependencies..."
-if [[ -f "$WORKTREE_PATH/pnpm-lock.yaml" ]]; then
-    pnpm install -C "$WORKTREE_PATH"
-elif [[ -f "$WORKTREE_PATH/package-lock.json" ]]; then
-    npm install --prefix "$WORKTREE_PATH"
-elif [[ -f "$WORKTREE_PATH/yarn.lock" ]]; then
-    yarn --cwd "$WORKTREE_PATH" install
-elif [[ -f "$WORKTREE_PATH/package.json" ]]; then
-    # Default to pnpm if available, else npm
-    if command -v pnpm &> /dev/null; then
-        pnpm install -C "$WORKTREE_PATH"
-    else
-        npm install --prefix "$WORKTREE_PATH"
-    fi
-fi
-
 # Run custom install scripts from repo config
 INSTALL_COUNT=$(echo "$SETUP_INSTALL" | jq 'length')
 if [[ "$INSTALL_COUNT" -gt 0 ]]; then
@@ -361,40 +344,6 @@ fi
 
 # Create session directory
 mkdir -p "$SESSION_DIR"
-
-# Auto-detect dev servers if none configured
-if [[ $(echo "$DEV_SERVERS" | jq 'length') -eq 0 ]] && [[ -f "$WORKTREE_PATH/package.json" ]]; then
-    log_info "No servers configured, scanning package.json..."
-    
-    DETECTED_SERVERS="[]"
-    
-    # Read scripts from package.json
-    SCRIPTS=$(jq -r '.scripts | to_entries[] | "\(.key):\(.value)"' "$WORKTREE_PATH/package.json" 2>/dev/null || echo "")
-    
-    # Priority list of script names to auto-run
-    for script_name in "dev" "start:dev" "develop" "start"; do
-        if echo "$SCRIPTS" | grep -q "^$script_name:"; then
-            CMD=$(echo "$SCRIPTS" | grep "^$script_name:" | head -1 | cut -d: -f2-)
-            log_info "Auto-detected server: $script_name ($CMD)"
-            
-            # Construct JSON object
-            SERVER_OBJ=$(jq -n \
-                --arg name "$script_name" \
-                --arg cmd "npm run $script_name" \
-                '{name: $name, cmd: $cmd}')
-            
-            DETECTED_SERVERS=$(echo "$DETECTED_SERVERS" | jq --argjson obj "$SERVER_OBJ" '. + [$obj]')
-            
-            # Only pick the first one we find (usually 'dev' is enough)
-            break
-        fi
-    done
-    
-    if [[ $(echo "$DETECTED_SERVERS" | jq 'length') -gt 0 ]]; then
-        DEV_SERVERS="$DETECTED_SERVERS"
-        START_SERVERS=true
-    fi
-fi
 
 # Find available ttyd port
 TTYD_PORT=""
@@ -451,7 +400,7 @@ cat > "$SESSION_DIR/meta.json" << EOF
 EOF
 log_success "Session metadata created"
 
-# Create tmux session with 1 window (servers) with custom layout
+# Create tmux session with servers + nvim windows
 log_info "Creating tmux session..."
 
 # Create servers window
@@ -466,16 +415,44 @@ if $START_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; th
     log_info "OpenCode server running on port $OPENCODE_PORT"
 fi
 
-
-
-# Create pane layout: vertical split, then left horizontally split
-tmux split-window -t "$SESSION_NAME:servers" -h  # vertical split: left .0, right .1
+log_info "Creating pane layout..."
+tmux split-window -t "$SESSION_NAME:servers" -h
 tmux select-pane -t "$SESSION_NAME:servers.0"
-tmux split-window -t "$SESSION_NAME:servers" -v  # horizontal split left: top .0, bottom .2 (since .1 is right)
+tmux split-window -t "$SESSION_NAME:servers" -v
+tmux select-pane -t "$SESSION_NAME:servers.0"
+tmux split-window -t "$SESSION_NAME:servers" -v
 
-# Now panes: .0 (top-left), .2 (bottom-left), .1 (right)
+LEFT_PANE_ORDER=()
+while read -r pane_index pane_left pane_top; do
+    if [[ "$pane_left" == "0" ]]; then
+        LEFT_PANE_ORDER+=("$pane_index:$pane_top")
+    fi
+done < <(tmux list-panes -t "$SESSION_NAME:servers" -F "#{pane_index} #{pane_left} #{pane_top}")
 
-log_success "Tmux session created with servers window and 3-pane layout"
+IFS=$'\n' sorted_left=($(sort -t: -k2,2n <<<"${LEFT_PANE_ORDER[*]}"))
+unset IFS
+LEFT_PANES=()
+for entry in "${sorted_left[@]}"; do
+    LEFT_PANES+=("${entry%%:*}")
+done
+
+RIGHT_PANE=""
+RIGHT_LEFT=-1
+while read -r pane_index pane_left; do
+    if (( pane_left > RIGHT_LEFT )); then
+        RIGHT_LEFT=$pane_left
+        RIGHT_PANE=$pane_index
+    fi
+done < <(tmux list-panes -t "$SESSION_NAME:servers" -F "#{pane_index} #{pane_left}")
+
+if [[ -n "$RIGHT_PANE" && -n "$OPENCODE_PORT" ]]; then
+    tmux send-keys -t "$SESSION_NAME:servers.$RIGHT_PANE" "opencode attach http://localhost:$OPENCODE_PORT" Enter
+fi
+
+tmux new-window -t "$SESSION_NAME" -n "nvim" -c "$WORKTREE_PATH"
+tmux send-keys -t "$SESSION_NAME:nvim" "nvim" Enter
+
+log_success "Tmux session created with servers + nvim windows"
 
 # Start ttyd for this session (supports window switching via URL args)
 if $START_TTYD && [[ -n "$TTYD_PORT" ]]; then
@@ -507,11 +484,17 @@ REPO_SERVICE_COUNT=$(echo "$REPO_SERVICES" | jq 'length')
 if $START_SERVERS && [[ "$REPO_SERVICE_COUNT" -gt 0 ]]; then
     log_info "Starting $REPO_SERVICE_COUNT service(s) with port allocation..."
 
-    PANE_ORDER=(0 2 1)
+    PANE_ORDER=("${LEFT_PANES[@]}")
+    if [[ ${#PANE_ORDER[@]} -lt 3 ]]; then
+        PANE_ORDER=(0 1 2)
+    fi
     SERVICE_IDX=0
-    WINDOW_IDX=0
     
     echo "$REPO_SERVICES" | jq -c '.[]' | while read -r service; do
+        if [[ $SERVICE_IDX -ge 3 ]]; then
+            log_warn "More than 3 services, only starting first 3"
+            break
+        fi
         SERVICE_NAME=$(echo "$service" | jq -r '.name')
         SERVICE_CMD=$(echo "$service" | jq -r '.cmd')
         SERVICE_CWD=$(echo "$service" | jq -r '.cwd // ""')
@@ -528,21 +511,7 @@ if $START_SERVERS && [[ "$REPO_SERVICE_COUNT" -gt 0 ]]; then
         PANE_IN_WINDOW=$((SERVICE_IDX % 3))
         PANE=${PANE_ORDER[$PANE_IN_WINDOW]}
         
-        if [[ $SERVICE_IDX -ge 3 ]] && [[ $PANE_IN_WINDOW -eq 0 ]]; then
-            WINDOW_IDX=$((WINDOW_IDX + 1))
-            WINDOW_NAME="services-$WINDOW_IDX"
-            log_info "Creating additional window: $WINDOW_NAME"
-            tmux new-window -t "$SESSION_NAME" -n "$WINDOW_NAME" -c "$WORKTREE_PATH"
-            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -h -c "$WORKTREE_PATH"
-            tmux select-pane -t "$SESSION_NAME:$WINDOW_NAME.0"
-            tmux split-window -t "$SESSION_NAME:$WINDOW_NAME" -v -c "$WORKTREE_PATH"
-        fi
-        
-        TARGET_WINDOW="servers"
-        if [[ $WINDOW_IDX -gt 0 ]]; then
-            TARGET_WINDOW="services-$WINDOW_IDX"
-        fi
-        PANE_TARGET="$SESSION_NAME:$TARGET_WINDOW.$PANE"
+        PANE_TARGET="$SESSION_NAME:servers.$PANE"
         
         FULL_CWD="$WORKTREE_PATH"
         [[ -n "$SERVICE_CWD" ]] && FULL_CWD="$WORKTREE_PATH/$SERVICE_CWD"
@@ -569,7 +538,10 @@ elif $START_SERVERS; then
     if [[ "$SERVER_COUNT" -gt 0 ]]; then
         log_info "Starting $SERVER_COUNT dev server(s) (legacy config)..."
 
-        PANE_ORDER=(0 2 1)
+        PANE_ORDER=("${LEFT_PANES[@]}")
+        if [[ ${#PANE_ORDER[@]} -lt 3 ]]; then
+            PANE_ORDER=(0 1 2)
+        fi
         i=0
         echo "$DEV_SERVERS" | jq -c '.[]' | while read -r server; do
             if [[ $i -ge 3 ]]; then

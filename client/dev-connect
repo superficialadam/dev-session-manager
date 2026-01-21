@@ -2,21 +2,10 @@
 set -euo pipefail
 
 # dev-connect: Connect to a development session on hetzner
-# Opens neovim locally in the mutagen-synced directory
 # Usage: dev-connect [session-name]
-#
-# Layout:
-#   ┌──────────────┬──────────────┐
-#   │   neovim     │              │
-#   │   (local)    │   opencode   │
-#   ├──────────────┤   (remote)   │
-#   │    mosh      │              │
-#   │ (dev-attach) │              │
-#   └──────────────┴──────────────┘
 
 SERVER="100.119.128.1"
-API_URL="http://${SERVER}:7777/api"
-LOCAL_MOUNT="$HOME/CODE/hetzner/CODE"
+API_URL="http://${SERVER}:3333/api"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -94,52 +83,11 @@ get_session() {
 connect_session() {
     local session_json="$1"
 
-    local name opencode_port
+    local name
     name=$(echo "$session_json" | jq -r '.name')
-    opencode_port=$(echo "$session_json" | jq -r '.opencode_port // empty')
-
-    local local_worktree="$LOCAL_MOUNT/worktrees/$name"
-
-    if [[ ! -d "$local_worktree" ]]; then
-        log_error "Local worktree not found at $local_worktree"
-        log_error "Is mutagen sync running?"
-        exit 1
-    fi
-
-    if [[ -z "$opencode_port" || "$opencode_port" == "null" ]]; then
-        log_error "No opencode port found for session: $name"
-        exit 1
-    fi
 
     log_info "Connecting to session: $name"
-    log_info "  OpenCode port: $opencode_port"
-    log_info "  Local worktree: $local_worktree"
-    echo ""
-
-    local tmux_session="dev-${name}"
-
-    tmux kill-session -t "$tmux_session" 2>/dev/null || true
-
-    tmux new-session -d -s "$tmux_session" -n "dev"
-    tmux set-option -t "$tmux_session" mouse on
-    tmux set-option -t "$tmux_session" set-clipboard on
-    tmux bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel "pbcopy"
-    tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
-
-    tmux split-window -t "$tmux_session:dev" -h -p 50
-    tmux send-keys -t "$tmux_session:dev" "opencode attach http://${SERVER}:${opencode_port}" Enter
-
-    tmux select-pane -t "$tmux_session:dev" -L
-
-    tmux split-window -t "$tmux_session:dev" -v -p 50
-    tmux send-keys -t "$tmux_session:dev" "mosh hetzner -- tmux attach -t ${name}" Enter
-
-    tmux select-pane -t "$tmux_session:dev" -U
-    tmux send-keys -t "$tmux_session:dev" "cd '$local_worktree' && nvim" Enter
-
-    tmux select-pane -t "$tmux_session:dev" -R
-
-    exec tmux attach-session -t "$tmux_session"
+    exec mosh hetzner -- dev-attach "$name"
 }
 
 main() {
