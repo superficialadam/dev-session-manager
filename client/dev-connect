@@ -87,7 +87,7 @@ connect_session() {
     name=$(echo "$session_json" | jq -r '.name')
 
     log_info "Connecting to session: $name"
-    exec mosh hetzner -- dev-attach "$name"
+    exec mosh hetzner -- /home/adam/.local/bin/dev-attach "$name"
 }
 
 main() {
