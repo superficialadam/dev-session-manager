@@ -6,6 +6,10 @@ set -euo pipefail
 
 SERVER="100.119.128.1"
 API_URL="http://${SERVER}:3333/api"
+SSH_TARGET="${DEV_SSH_TARGET:-hetzner}"
+DEFAULT_DEV_DIR="$HOME/.dev-sessions"
+DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
+REPOS_FILE="$DEV_DIR/repos.json"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +19,72 @@ NC='\033[0m'
 
 log_error() { echo -e "${RED}✗${NC} $1" >&2; }
 log_info() { echo -e "${CYAN}→${NC} $1"; }
+
+get_repo_forward_ports() {
+    local repo="$1"
+    if [[ -f "$REPOS_FILE" ]]; then
+        jq -r --arg repo "$repo" '.[$repo].forward_ports // [] | .[]' "$REPOS_FILE" 2>/dev/null || true
+    fi
+}
+
+port_is_listening() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+ensure_port_forwarding() {
+    local session_json="$1"
+
+    local name repo
+    name=$(echo "$session_json" | jq -r '.name')
+    repo=$(echo "$session_json" | jq -r '.repo')
+
+    local ports=()
+    local port
+
+    while IFS= read -r port; do
+        [[ -n "$port" && "$port" != "null" ]] && ports+=("$port")
+    done < <(get_repo_forward_ports "$repo")
+
+    if [[ ${#ports[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local unique_ports=()
+    local seen=""
+    for port in "${ports[@]}"; do
+        if [[ " $seen " != *" $port "* ]]; then
+            unique_ports+=("$port")
+            seen+=" $port"
+        fi
+    done
+
+    local missing_ports=()
+    for port in "${unique_ports[@]}"; do
+        if port_is_listening "$port"; then
+            continue
+        fi
+        missing_ports+=("$port")
+    done
+
+    if [[ ${#missing_ports[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local forward_args=()
+    for port in "${missing_ports[@]}"; do
+        forward_args+=("-L" "${port}:localhost:${port}")
+    done
+
+    log_info "Starting SSH tunnel for ${name}: ${missing_ports[*]}"
+    if ! ssh -N -f "${forward_args[@]}" "$SSH_TARGET"; then
+        log_error "Failed to start SSH tunnel for ${name}"
+    fi
+}
 
 fetch_sessions() {
     curl -s "${API_URL}/sessions" | jq '.sessions'
@@ -87,6 +157,7 @@ connect_session() {
     name=$(echo "$session_json" | jq -r '.name')
 
     log_info "Connecting to session: $name"
+    ensure_port_forwarding "$session_json"
     exec mosh hetzner -- /home/adam/.local/bin/dev-attach "$name"
 }
 

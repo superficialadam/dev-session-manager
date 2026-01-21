@@ -408,6 +408,9 @@ tmux new-session -d -s "$SESSION_NAME" -n "servers" -c "$WORKTREE_PATH" bash -c 
 
 # Enable mouse mode for web/mobile terminal access
 tmux set-option -t "$SESSION_NAME" mouse on
+tmux set-option -t "$SESSION_NAME" set-clipboard on
+tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
+tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
 
 # Start opencode server in background if requested
 if $START_AGENT && [[ "$AGENT" == "opencode" ]] && [[ -n "$OPENCODE_PORT" ]]; then
