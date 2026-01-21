@@ -10,6 +10,7 @@ SSH_TARGET="${DEV_SSH_TARGET:-hetzner}"
 DEFAULT_DEV_DIR="$HOME/.dev-sessions"
 DEV_DIR="${DEV_DIR:-$DEFAULT_DEV_DIR}"
 REPOS_FILE="$DEV_DIR/repos.json"
+REMOTE_REPOS_FILE="~/.dev-sessions/repos.json"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,8 +23,17 @@ log_info() { echo -e "${CYAN}→${NC} $1"; }
 
 get_repo_forward_ports() {
     local repo="$1"
-    if [[ -f "$REPOS_FILE" ]]; then
-        jq -r --arg repo "$repo" '.[$repo].forward_ports // [] | .[]' "$REPOS_FILE" 2>/dev/null || true
+    local ports=""
+
+    ports=$(ssh "$SSH_TARGET" "cat $REMOTE_REPOS_FILE" 2>/dev/null \
+        | jq -r --arg repo "$repo" '.[$repo].forward_ports // [] | .[]' 2>/dev/null || true)
+
+    if [[ -z "$ports" && -f "$REPOS_FILE" ]]; then
+        ports=$(jq -r --arg repo "$repo" '.[$repo].forward_ports // [] | .[]' "$REPOS_FILE" 2>/dev/null || true)
+    fi
+
+    if [[ -n "$ports" ]]; then
+        printf '%s\n' "$ports"
     fi
 }
 
