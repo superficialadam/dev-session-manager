@@ -22,7 +22,7 @@ const statusColors: Record<string, string> = {
   idle: 'bg-status-idle',
 }
 
-const INITIAL_MESSAGE_LIMIT = 10
+const INITIAL_MESSAGE_LIMIT = 20
 const LOAD_MORE_COUNT = 20
 
 function isSubagentSession(session: OpencodeSession): boolean {
@@ -91,7 +91,8 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
   const fetchMessages = useCallback(async () => {
     if (!selectedSessionId) return
     try {
-      const data = await getOpencodeMessages(opencodePort, selectedSessionId)
+      // Fetch only what we need using limit parameter
+      const data = await getOpencodeMessages(opencodePort, selectedSessionId, displayCount + 5)
       const nonEmptyMessages = data.filter(hasContent)
       
       const newIds = nonEmptyMessages.map(m => m.info.id).join(',')
@@ -99,11 +100,8 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
       if (newIds !== prevMessageIdsRef.current) {
         prevMessageIdsRef.current = newIds
         setAllMessages(nonEmptyMessages)
-        
-        // Show last N messages, keeping displayCount in sync
-        const displayMessages = nonEmptyMessages.slice(-displayCount)
-        setMessages(displayMessages)
-        setHasMoreMessages(nonEmptyMessages.length > displayCount)
+        setMessages(nonEmptyMessages)
+        setHasMoreMessages(nonEmptyMessages.length >= displayCount + 5)
       }
     } catch (err) {
       console.error('Failed to fetch messages:', err)
@@ -116,17 +114,16 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     setError(null)
     isInitialLoadRef.current = true
     try {
-      const data = await getOpencodeMessages(opencodePort, selectedSessionId)
+      // Fetch only the last N messages using limit parameter - much faster!
+      const data = await getOpencodeMessages(opencodePort, selectedSessionId, INITIAL_MESSAGE_LIMIT + 5)
       const nonEmptyMessages = data.filter(hasContent)
       
       setAllMessages(nonEmptyMessages)
       prevMessageIdsRef.current = nonEmptyMessages.map(m => m.info.id).join(',')
       
-      // Show only the last INITIAL_MESSAGE_LIMIT messages
-      const initialDisplay = Math.min(INITIAL_MESSAGE_LIMIT, nonEmptyMessages.length)
-      setDisplayCount(initialDisplay)
-      setMessages(nonEmptyMessages.slice(-initialDisplay))
-      setHasMoreMessages(nonEmptyMessages.length > initialDisplay)
+      setDisplayCount(nonEmptyMessages.length)
+      setMessages(nonEmptyMessages)
+      setHasMoreMessages(nonEmptyMessages.length >= INITIAL_MESSAGE_LIMIT + 5)
       
       // Scroll to bottom after render
       setTimeout(() => {
@@ -140,27 +137,37 @@ export function OpencodeSessionView({ sessionName, opencodePort }: Props) {
     }
   }, [opencodePort, selectedSessionId, scrollToBottom])
 
-  const loadMoreMessages = useCallback(() => {
-    if (!hasMoreMessages || isLoadingMore) return
+  const loadMoreMessages = useCallback(async () => {
+    if (!hasMoreMessages || isLoadingMore || !selectedSessionId) return
     
     setIsLoadingMore(true)
     const container = messagesContainerRef.current
     const scrollHeightBefore = container?.scrollHeight || 0
     
-    const newDisplayCount = Math.min(displayCount + LOAD_MORE_COUNT, allMessages.length)
-    setDisplayCount(newDisplayCount)
-    setMessages(allMessages.slice(-newDisplayCount))
-    setHasMoreMessages(allMessages.length > newDisplayCount)
-    
-    // Maintain scroll position after loading more
-    setTimeout(() => {
-      if (container) {
-        const scrollHeightAfter = container.scrollHeight
-        container.scrollTop = scrollHeightAfter - scrollHeightBefore
-      }
+    try {
+      const newLimit = displayCount + LOAD_MORE_COUNT
+      const data = await getOpencodeMessages(opencodePort, selectedSessionId, newLimit + 5)
+      const nonEmptyMessages = data.filter(hasContent)
+      
+      setAllMessages(nonEmptyMessages)
+      setMessages(nonEmptyMessages)
+      setDisplayCount(nonEmptyMessages.length)
+      setHasMoreMessages(nonEmptyMessages.length >= newLimit + 5)
+      prevMessageIdsRef.current = nonEmptyMessages.map(m => m.info.id).join(',')
+      
+      // Maintain scroll position after loading more
+      setTimeout(() => {
+        if (container) {
+          const scrollHeightAfter = container.scrollHeight
+          container.scrollTop = scrollHeightAfter - scrollHeightBefore
+        }
+      }, 10)
+    } catch (err) {
+      console.error('Failed to load more messages:', err)
+    } finally {
       setIsLoadingMore(false)
-    }, 10)
-  }, [hasMoreMessages, isLoadingMore, displayCount, allMessages])
+    }
+  }, [hasMoreMessages, isLoadingMore, displayCount, selectedSessionId, opencodePort])
 
   useEffect(() => {
     fetchSessions()

@@ -1,20 +1,56 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { OpencodeSessionViewInline } from './opencode-session-view-inline'
 
 interface Props {
   sessionName: string
   ttydPort: number | null
   opencodePort: number | null
   tmuxExists: boolean
+  worktree: string
 }
 
-export function SessionTabbedView({ sessionName, ttydPort, opencodePort, tmuxExists }: Props) {
+function encodeWorktree(worktree: string): string {
+  // Base64 encode the worktree path (without padding for cleaner URLs)
+  if (typeof window !== 'undefined') {
+    return btoa(worktree).replace(/=+$/, '')
+  }
+  return Buffer.from(worktree).toString('base64').replace(/=+$/, '')
+}
+
+export function SessionTabbedView({ sessionName, ttydPort, opencodePort, tmuxExists, worktree }: Props) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<'agent' | 'terminal'>('agent')
   const [isRestarting, setIsRestarting] = useState(false)
+  const [opencodeWebUrl, setOpencodeWebUrl] = useState<string | null>(null)
+
+  // Fetch the latest session ID and build OpenCode web UI URL
+  useEffect(() => {
+    if (!opencodePort || !worktree) {
+      setOpencodeWebUrl(null)
+      return
+    }
+
+    const hostname = window.location.hostname
+    const encodedWorktree = encodeWorktree(worktree)
+
+    // Fetch latest session for this worktree
+    fetch(`/api/opencode/${opencodePort}?path=${encodeURIComponent(`/session?directory=${worktree}&limit=1`)}`)
+      .then(res => res.json())
+      .then(sessions => {
+        if (sessions && sessions.length > 0) {
+          setOpencodeWebUrl(`http://${hostname}:${opencodePort}/${encodedWorktree}/session/${sessions[0].id}`)
+        } else {
+          // Fallback to session list view
+          setOpencodeWebUrl(`http://${hostname}:${opencodePort}/${encodedWorktree}/session`)
+        }
+      })
+      .catch(() => {
+        // Fallback to session list view
+        setOpencodeWebUrl(`http://${hostname}:${opencodePort}/${encodedWorktree}/session`)
+      })
+  }, [opencodePort, worktree])
 
   const handleRestartServices = async () => {
     if (!confirm('Restart dev services?')) return
@@ -103,10 +139,12 @@ export function SessionTabbedView({ sessionName, ttydPort, opencodePort, tmuxExi
       
       <main className="flex-1 overflow-hidden">
         {activeTab === 'agent' ? (
-          opencodePort ? (
-            <div className="h-full">
-              <OpencodeSessionViewInline sessionName={sessionName} opencodePort={opencodePort} />
-            </div>
+          opencodeWebUrl ? (
+            <iframe
+              src={opencodeWebUrl}
+              className="w-full h-full border-0"
+              title="OpenCode"
+            />
           ) : (
             <div className="flex items-center justify-center h-full text-neutral-500">
               <p>OpenCode not available for this session</p>

@@ -9,11 +9,17 @@ export async function GET(
   const path = searchParams.get('path') || '/session'
   
   try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
+    
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       headers: {
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
     })
+    
+    clearTimeout(timeout)
     
     if (!response.ok) {
       return NextResponse.json(
@@ -25,6 +31,12 @@ export async function GET(
     const data = await response.json()
     return NextResponse.json(data)
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Request timeout - OpenCode server too slow' },
+        { status: 504 }
+      )
+    }
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
       { error: `Failed to connect to OpenCode server: ${message}` },
@@ -43,6 +55,8 @@ export async function POST(
   
   try {
     const body = await request.json()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
     
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       method: 'POST',
@@ -50,7 +64,10 @@ export async function POST(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: controller.signal,
     })
+    
+    clearTimeout(timeout)
     
     if (response.status === 204) {
       return new NextResponse(null, { status: 204 })
@@ -66,6 +83,12 @@ export async function POST(
     const data = await response.json()
     return NextResponse.json(data)
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Request timeout - OpenCode server too slow' },
+        { status: 504 }
+      )
+    }
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
       { error: `Failed to connect to OpenCode server: ${message}` },

@@ -22,6 +22,7 @@ export default async function SessionPage({ params }: Props) {
         ttydPort={session.ttyd_port}
         opencodePort={session.opencode_port}
         tmuxExists={session.tmux_exists}
+        worktree={session.worktree}
       />
     </div>
   )
